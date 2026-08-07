@@ -1,0 +1,45 @@
+{
+  "name": "blt-drive-desktop",
+  "version": "0.1.0",
+  "description": "BLT Drive Desktop — importe et transcode des vidéos en local puis uploade original + renditions 720/480/360p",
+  "main": "main.js",
+  "scripts": {
+    "start": "electron .",
+    "dist": "electron-builder"
+  },
+  "author": "BLT",
+  "license": "MIT",
+  "dependencies": {
+    "electron-updater": "^6.8.9",
+    "ffmpeg-static": "^5.2.0"
+  },
+  "devDependencies": {
+    "electron": "^33.2.0",
+    "electron-builder": "^25.1.8"
+  },
+  "build": {
+    "appId": "app.blt.drive",
+    "productName": "BLT Drive Desktop",
+    "publish": {
+      "provider": "github",
+      "owner": "nobody-num1",
+      "repo": "blt-drive-desktop"
+    },
+    "files": [
+      "main.js",
+      "preload.js",
+      "src/**/*",
+      "renderer/**/*"
+    ],
+    "extraResources": [
+      {
+        "from": "node_modules/ffmpeg-static/ffmpeg.exe",
+        "to": "ffmpeg/ffmpeg.exe"
+      }
+    ],
+    "win": {
+      "target": "nsis",
+      "signAndEditExecutable": false
+    }
+  }
+}
