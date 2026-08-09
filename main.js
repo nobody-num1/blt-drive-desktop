@@ -1,6 +1,7 @@
 const fs = require('fs');
 const os = require('os');
 const path = require('path');
+const http = require('http');
 const { app, BrowserWindow, ipcMain, dialog, shell } = require('electron');
 const { autoUpdater } = require('electron-updater');
 
@@ -20,6 +21,7 @@ let win = null;
 let settings = { origin: '', accounts: [], activeAccountId: '' };
 let api = null;
 let pendingDeepLink = null;
+let loginOnShow = null;
 
 function loadSettings() {
   try {
@@ -69,10 +71,9 @@ function publicAccounts() {
   return (settings.accounts || []).map(publicAccount);
 }
 
-function parseDeepLink(url) {
+function parseParams(url) {
   try {
     const u = new URL(url);
-    if (u.protocol !== 'bltdrive:') return null;
     return {
       token: u.searchParams.get('token') || '',
       label: u.searchParams.get('label') || '',
@@ -83,13 +84,9 @@ function parseDeepLink(url) {
   } catch { return null; }
 }
 
-function handleDeepLink(url) {
-  const d = parseDeepLink(url);
-  if (!d || !d.token) return;
-  if (!settings.origin) { pendingDeepLink = d; return; }
-  const acc = upsertAndActivate(d);
-  saveSettings();
-  emit({ type: 'account-connected', account: publicAccount(acc) });
+function parseDeepLink(url) {
+  const d = parseParams(url);
+  return d && d.token ? d : null;
 }
 
 function upsertAndActivate(d) {
@@ -98,10 +95,67 @@ function upsertAndActivate(d) {
   return acc;
 }
 
-function openExternalLogin() {
+function applyLogin(d) {
+  if (!d || !d.token) return;
+  if (!settings.origin) { pendingDeepLink = d; return; }
+  const acc = upsertAndActivate(d);
+  saveSettings();
+  emit({ type: 'account-connected', account: publicAccount(acc) });
+  if (win && !win.isDestroyed()) {
+    if (win.isMinimized()) win.restore();
+    win.show();
+    win.focus();
+  }
+}
+
+function handleDeepLink(url) {
+  applyLogin(parseDeepLink(url));
+}
+
+// Mini serveur local (127.0.0.1) : canal de retour fiable pour la connexion
+const CB_BASE_PORT = 33445;
+let callbackServer = null;
+let callbackPort = 0;
+let callbackReady = null;
+
+function startCallbackServer() {
+  if (callbackReady) return callbackReady;
+  callbackReady = new Promise(resolve => {
+    const server = http.createServer((req, res) => {
+      const send = (status, body, extra = {}) => {
+        res.writeHead(status, { 'Content-Type': 'text/html;charset=utf-8', 'Cache-Control': 'no-store', 'Access-Control-Allow-Origin': '*', 'Access-Control-Allow-Methods': 'GET,POST,OPTIONS', 'Access-Control-Allow-Headers': '*', 'Access-Control-Allow-Private-Network': 'true', ...extra });
+        res.end(body);
+      };
+      if (req.method === 'OPTIONS') return send(204, '');
+      let d = null;
+      try { d = parseParams('bltdrive://local' + (req.url || '/')); } catch {}
+      if (d && d.token) applyLogin(d);
+      const ok = d && d.token;
+      const html = ok
+        ? '<!DOCTYPE html><html lang="fr"><head><meta charset="UTF-8"><title>BLT Drive Desktop</title></head>'
+          + '<body style="font-family:Segoe UI,system-ui,sans-serif;background:#313338;color:#dbdee1;display:flex;align-items:center;justify-content:center;min-height:100vh;margin:0">'
+          + '<div style="text-align:center"><div style="font-size:44px">✅</div><h2>Connexion réussie</h2>'
+          + '<p>Ton compte est connecté sur BLT Drive Desktop. Tu peux fermer cet onglet.</p>'
+          + '<a href="#" onclick="window.open(\'\',\'_self\').close();return false" style="color:#5865F2">Fermer</a></div></body></html>'
+        : 'missing token';
+      send(ok ? 200 : 400, html);
+    });
+    const bind = port => server.listen(port, '127.0.0.1', () => { callbackServer = server; callbackPort = server.address().port; resolve(callbackPort); });
+    server.on('error', () => {
+      if (!callbackServer) bind(0); // port fixe pris : on retombe sur un port libre
+    });
+    bind(CB_BASE_PORT);
+  });
+  return callbackReady;
+}
+
+async function openExternalLogin() {
   const origin = settings.origin;
   if (!origin) return { ok: false, error: 'Renseigne d\u2019abord l\u2019URL du drive' };
-  shell.openExternal(origin + '/login');
+  let port = 0;
+  try { port = await startCallbackServer(); } catch {}
+  const url = origin + '/login' + (port ? '?cb=' + port : '');
+  shell.openExternal(url);
   return { ok: true };
 }
 
@@ -124,6 +178,30 @@ function qualityName(originalName, q) {
   return n.replace(/\.[^.]+$/, '') + '_' + q + 'p.mp4';
 }
 
+function freeBytes(cfg) {
+  const q = (cfg && cfg.quota) || {};
+  const limit = q.limit;
+  if (limit === '-1' || limit === '-1n' || limit === undefined || limit === null) return -1;
+  const lim = Number(limit);
+  if (!isFinite(lim) || lim <= 0) return -1;
+  return Math.max(0, lim - (Number(q.usage) || 0));
+}
+
+function fmtBar(n) {
+  if (!n || n < 0) return 'illimité';
+  const u = ['o', 'Ko', 'Mo', 'Go', 'To'];
+  let i = 0, v = n;
+  while (v >= 1024 && i < u.length - 1) { v /= 1024; i++; }
+  return v.toFixed(v >= 10 || i === 0 ? 0 : 1) + ' ' + u[i];
+}
+
+function assertSpace(cfg, bytes) {
+  const free = freeBytes(cfg);
+  if (free >= 0 && bytes > free) {
+    throw new Error('Espace insuffisant sur le drive : il faut ' + fmtBar(bytes) + ' mais il ne reste que ' + fmtBar(free) + ' (quota ' + fmtBar(cfg.quota.limit) + ').');
+  }
+}
+
 function cleanDir(dir) {
   fs.rmSync(dir, { recursive: true, force: true });
 }
@@ -137,8 +215,14 @@ async function importLocal(videos, opts) {
   const cfg = await api.config();
   if (!cfg.key) throw new Error('Clé de chiffrement indisponible sur le serveur');
   if (!cfg.webhook) throw new Error('Webhook Discord non configuré sur le serveur');
-  if (!cfg.canImport) throw new Error('L\u2019import (transcodage) est réservé aux membres VIP et admin');
+  if (!cfg.canImport) throw new Error('Connexion requise pour importer');
   const qualities = (opts.qualities || [720, 480, 360]).filter(q => !isNaN(q)).sort((a, b) => a - b);
+  const plannedBytes = videos.reduce((s, v) => {
+    let size = 0;
+    try { size = fs.statSync(v).size; } catch {}
+    return s + size * (1 + qualities.length);
+  }, 0);
+  assertSpace(cfg, plannedBytes);
   for (const v of videos) {
     const j = path.basename(v);
     emit({ type: 'job-start', job: j });
@@ -163,6 +247,8 @@ async function importLocal(videos, opts) {
             emit({ type: 'phase', job: j, phase: 'transcode', detail: 'Transcription ' + q + 'p', pct: null });
           }
         });
+        const outBytes = fs.statSync(out).size;
+        assertSpace(cfg, outBytes);
         emit({ type: 'phase', job: j, phase: 'upload', detail: 'Upload ' + q + 'p', pct: 0 });
         await runUpload(api, cfg.key, cfg.webhook, out, qualityName(origName, q), 'video/mp4', opts.parentId || null,
           (c, t) => emit({ type: 'phase', job: j, phase: 'upload', detail: q + 'p — blocs ' + c + '/' + t, pct: t ? Math.round(c / t * 100) : 0 }));
@@ -180,7 +266,7 @@ async function importLocal(videos, opts) {
 async function importDrive(fileId, opts) {
   const cfg = await api.config();
   if (!cfg.key) throw new Error('Clé de chiffrement indisponible');
-  if (!cfg.canImport) throw new Error('L\u2019import (transcodage) est réservé aux membres VIP et admin');
+  if (!cfg.canImport) throw new Error('Connexion requise pour importer');
   const tree = await api.tree();
   const item = (tree.items || []).find(i => i.id === fileId);
   if (!item) throw new Error('Fichier introuvable sur le drive');
@@ -204,6 +290,8 @@ async function importDrive(fileId, opts) {
           emit({ type: 'phase', job: j, phase: 'transcode', detail: 'Transcription ' + q + 'p', pct: null });
         }
       });
+      const outBytes = fs.statSync(out).size;
+      assertSpace(cfg, outBytes);
       emit({ type: 'phase', job: j, phase: 'upload', detail: 'Upload ' + q + 'p', pct: 0 });
       await runUpload(api, cfg.key, cfg.webhook, out, qualityName(item.name, q), 'video/mp4', item.parentId || null,
         (c, t) => emit({ type: 'phase', job: j, phase: 'upload', detail: q + 'p — blocs ' + c + '/' + t, pct: t ? Math.round(c / t * 100) : 0 }));
@@ -256,13 +344,24 @@ if (!gotLock) {
 
   app.on('open-url', (e, url) => { e.preventDefault(); handleDeepLink(url); });
 
-  app.whenReady().then(() => {
+  app.whenReady().then(async () => {
     registerProtocol();
     loadSettings();
+    try { await startCallbackServer(); } catch {}
     // Deep link reçu au démarrage (avant origin) : on l'applique dès que l'origin est connue
     const startup = process.argv.find(a => a.startsWith('bltdrive://'));
-    if (startup) { const d = parseDeepLink(startup); if (d && d.token) pendingDeepLink = d; }
+    if (startup) {
+      const d = parseDeepLink(startup);
+      if (d && d.token) {
+        if (settings.origin) loginOnShow = d;
+        else pendingDeepLink = d;
+      }
+    }
     createWindow();
+    if (loginOnShow) {
+      const d = loginOnShow; loginOnShow = null;
+      win.webContents.once('did-finish-load', () => applyLogin(d));
+    }
     setupAutoUpdater();
     // Vérifie une mise à jour au démarrage, sans bloquer
     autoUpdater.checkForUpdates().catch(() => {});
@@ -330,7 +429,7 @@ ipcMain.handle('test-connection', async () => {
     const cfg = await a.config();
     const acc = activeAccount();
     const quotaRole = (acc && (acc.quotaRole || acc.role || '')) || '';
-    const canImport = !!acc && ['admin', 'vip'].includes(quotaRole);
+    const canImport = !!acc && !!cfg.canImport;
     return { ok: true, account: publicAccount(acc), quota: cfg.quota, canImport, role: (acc && acc.role) || '', quotaRole, webhook: !!cfg.webhook, hasKey: !!cfg.key };
   } catch (e) { return { ok: false, error: e.message }; }
 });

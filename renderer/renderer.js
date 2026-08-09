@@ -90,8 +90,8 @@ function applyRole(r) {
   $('btn-pick').disabled = !allow;
   $('btn-import').disabled = !allow;
   const lk = $('import-locked');
-  if (!allow && state.activeAccountId) lk.textContent = 'Ton compte (' + (r.account ? r.account.label : '') + ') n\u2019est pas VIP ni admin — le transcodage/import est désactivé.';
-  else if (!allow) lk.textContent = 'Les options d\u2019import (transcodage 720/480/360p) sont réservées aux membres VIP et admin.';
+  if (!allow && state.activeAccountId) lk.textContent = 'Connecte-toi à un compte Discord pour importer des vidéos.';
+  else if (!allow) lk.textContent = 'Connecte-toi à un compte Discord pour importer des vidéos\u2009— toute personne connectée peut importer et transcoder.';
 }
 
 async function refresh(showErrors) {
@@ -243,13 +243,13 @@ $('btn-test').onclick = async () => {
 };
 
 $('btn-pick').onclick = async () => {
-  if (!state.canImport) { showError('L\u2019import est réservé aux membres VIP et admin'); return; }
+  if (!state.canImport) { showError('Connecte-toi à un compte Discord pour importer des vidéos.'); return; }
   const paths = await window.blt.pickVideos();
   if (paths && paths.length) { state.files = paths; renderFiles(); }
 };
 
 $('btn-import').onclick = async () => {
-  if (!state.canImport) { showError('L\u2019import est réservé aux membres VIP et admin'); return; }
+  if (!state.canImport) { showError('Connecte-toi à un compte Discord pour importer des vidéos.'); return; }
   if (!state.files.length) { showError('Choisis d\u2019abord des vidéos'); return; }
   clearError();
   const q = collectQualities();
@@ -266,7 +266,7 @@ $('btn-import').onclick = async () => {
 $('btn-refresh-drive').onclick = () => renderDrive();
 
 async function runDriveImport(id) {
-  if (!state.canImport) { showError('L\u2019import est réservé aux membres VIP et admin'); return; }
+  if (!state.canImport) { showError('Connecte-toi à un compte Discord pour importer des vidéos.'); return; }
   clearError();
   const q = collectQualities();
   if (!q.length) { showError('Sélectionne au moins une version à générer'); return; }

@@ -1,6 +1,6 @@
 {
   "name": "blt-drive-desktop",
-  "version": "0.1.0",
+  "version": "0.3.4",
   "description": "BLT Drive Desktop — importe et transcode des vidéos en local puis uploade original + renditions 720/480/360p",
   "main": "main.js",
   "scripts": {
@@ -20,6 +20,9 @@
   "build": {
     "appId": "app.blt.drive",
     "productName": "BLT Drive Desktop",
+    "protocols": [
+      { "name": "BLT Drive Desktop", "schemes": ["bltdrive"] }
+    ],
     "publish": {
       "provider": "github",
       "owner": "nobody-num1",
@@ -40,6 +43,9 @@
     "win": {
       "target": "nsis",
       "signAndEditExecutable": false
+    },
+    "nsis": {
+      "artifactName": "BLT-Drive-Desktop-Setup.exe"
     }
   }
 }
