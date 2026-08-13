@@ -459,6 +459,7 @@ if (!gotLock) {
   app.whenReady().then(async () => {
     registerProtocol();
     loadSettings();
+    cleanOpenDir();
     try { await startCallbackServer(); } catch {}
     // Deep link reçu au démarrage (avant origin) : on l'applique dès que l'origin est connue
     const startup = process.argv.find(a => a.startsWith('bltdrive://'));
@@ -483,6 +484,8 @@ if (!gotLock) {
 }
 
 app.on('window-all-closed', () => { if (process.platform !== 'darwin') app.quit(); });
+
+app.on('will-quit', () => { cleanOpenDir(); });
 
 ipcMain.on('app-log', (e, m) => dlog('[renderer] ' + String(m || '').slice(0, 200)));
 
@@ -658,6 +661,46 @@ ipcMain.handle('disk-zip', async (e, id, defaultName) => {
     const buf = Buffer.from(await res.arrayBuffer());
     fs.writeFileSync(r.filePath, buf);
     return { ok: true, path: r.filePath };
+  } catch (err) { return { error: err.message }; }
+});
+
+const TEMP_OPEN_DIR = path.join(os.tmpdir(), 'blt-drive-open');
+
+function cleanOpenDir() {
+  try { fs.rmSync(TEMP_OPEN_DIR, { recursive: true, force: true }); } catch {}
+}
+
+function scheduleOpenCleanup(filePath) {
+  const maxAttempts = 10;
+  let attempt = 0;
+  const tryDelete = () => {
+    try {
+      fs.rmSync(filePath, { force: true });
+      dlog('open-external: fichier temp supprimé ' + filePath);
+    } catch {
+      attempt++;
+      if (attempt < maxAttempts) setTimeout(tryDelete, 3000);
+    }
+  };
+  setTimeout(tryDelete, 10000);
+}
+
+ipcMain.handle('disk-open-external', async (e, id, name) => {
+  const a = buildApi();
+  if (!a) return { error: 'Non connecté' };
+  try {
+    const res = await a.download(id);
+    if (!res.ok) return { error: 'Erreur téléchargement ' + res.status };
+    const safe = (name || 'fichier').replace(/[\\/:*?"<>|]+/g, '_').slice(0, 120);
+    cleanOpenDir();
+    fs.mkdirSync(TEMP_OPEN_DIR, { recursive: true });
+    const target = path.join(TEMP_OPEN_DIR, safe);
+    fs.writeFileSync(target, Buffer.from(await res.arrayBuffer()));
+    dlog('open-external: écrit ' + target + ' (' + fs.statSync(target).size + ' o), ouverture…');
+    const err = await shell.openPath(target);
+    if (err) { dlog('open-external: shell.openPath error=' + err); return { error: err }; }
+    scheduleOpenCleanup(target);
+    return { ok: true, path: target };
   } catch (err) { return { error: err.message }; }
 });
 

@@ -329,7 +329,7 @@ function renderList() {
     row.ondblclick = e => {
       const t = row.dataset.type;
       if (t === 'folder') navigateTo(id, true);
-      else if (t === 'video') openPreview(id);
+      else if (t === 'video' || t === 'image' || t === 'pdf' || t === 'file') openPreview(id);
       else if (t === 'share') openShareLink(id);
       else if (t === 'sfile') openPreview(id);
     };
@@ -413,11 +413,13 @@ function openShareLink(id) {
 function rowHtml(i) {
   const isDir = i.type === 'folder';
   const isVideo = !isDir && (i.mime || '').startsWith('video/');
+  const isImage = !isDir && (i.mime || '').startsWith('image/');
+  const isPdf = !isDir && ((i.mime || '') === 'application/pdf' || /\.pdf$/i.test(i.name || ''));
   const isSub = !isDir && (i.subtitleOf || i.renditionOf);
-  const icon = isDir ? '<span class="icon dir">📁</span>' : isVideo ? '<span class="icon video">🎬</span>' : isSub ? '<span class="icon sub">▤</span>' : '<span class="icon file">📄</span>';
-  const type = isDir ? 'Dossier' : isVideo ? 'Vidéo' : isSub ? 'Sous-titre' : 'Fichier';
+  const icon = isDir ? '<span class="icon dir">📁</span>' : isVideo ? '<span class="icon video">🎬</span>' : isImage ? '<span class="icon img">🖼</span>' : isPdf ? '<span class="icon pdf">📕</span>' : isSub ? '<span class="icon sub">▤</span>' : '<span class="icon file">📄</span>';
+  const type = isDir ? 'Dossier' : isVideo ? 'Vidéo' : isImage ? 'Image' : isPdf ? 'PDF' : isSub ? 'Sous-titre' : 'Fichier';
   const sel = state.selection.has(i.id) ? ' sel' : '';
-  return '<div class="row-item' + sel + '" data-row="' + i.id + '" data-type="' + (isDir ? 'folder' : isVideo ? 'video' : 'file') + '">'
+  return '<div class="row-item' + sel + '" data-row="' + i.id + '" data-type="' + (isDir ? 'folder' : isVideo ? 'video' : isImage ? 'image' : isPdf ? 'pdf' : 'file') + '">'
     + '<div class="c-name">' + icon + '<span class="fname" title="' + esc(i.name) + '">' + esc(cutName(i.name, 60)) + '</span></div>'
     + '<div class="c-size">' + fmtSize(isDir ? folderSize(i.id) : (i.size || 0)) + '</div>'
     + '<div class="c-type">' + type + '</div>'
@@ -490,6 +492,7 @@ function showCtxMenu(id, evt) {
   ];
   if (isDir) items.push({ label: '🗜 ZIP', act: () => doZip(id, it.name) });
   if (isVideo) items.push({ label: '⚡ Transcoder', act: () => runDriveImport(id) });
+  if (!isDir) items.push({ label: '📂 Ouvrir dans l\'application', act: () => doOpenExternal(id, it.name) });
   items.push(
     { label: '✏ Renommer', act: () => promptRename(id, it.name) },
     { label: '📦 Déplacer', act: () => promptMove(id) },
@@ -523,6 +526,15 @@ function closeCtxMenu() {
 async function doDownload(id, name) {
   try { await window.blt.diskDownload(id, name); }
   catch (e) { showError(e.message); }
+}
+
+async function doOpenExternal(id, name) {
+  try {
+    clearError();
+    const r = await window.blt.diskOpenExternal(id, name);
+    if (r && r.error) showError(r.error);
+    else if (r && r.ok) setTimeout(() => refresh(false), 600);
+  } catch (e) { showError(e.message); }
 }
 
 async function doZip(id, name) {
@@ -586,9 +598,78 @@ function promptShare(id) {
   });
 }
 
-// ── Aperçu vidéo (streaming) ──────────────────────────────────
+// ── Aperçu (vidéo / image / PDF) ──────────────────────────────
 let pvCurrent = null;
 async function openPreview(id) {
+  const it = itemById(id);
+  if (!it) return;
+  const mime = (it.mime || '').toLowerCase();
+  const name = (it.name || '').toLowerCase();
+  if (mime.startsWith('image/')) return openImage(it);
+  if (mime === 'application/pdf' || name.endsWith('.pdf')) return openPdf(it);
+  if (mime.startsWith('audio/')) return openAudio(it);
+  if (mime.startsWith('video/')) return openVideo(it);
+  return openGeneric(it);
+}
+
+function openModal(title, wide) {
+  $('modal-title').innerHTML = title;
+  $('modal-body').innerHTML = '';
+  $('modal-actions').innerHTML = '';
+  $('modal').classList.toggle('wide', !!wide);
+  $('modal-overlay').style.display = 'flex';
+}
+
+function openImage(it) {
+  openModal('Image — ' + esc(it.name), true);
+  $('modal-body').innerHTML = '<div class="img-wrap"><img id="pv-img" src="' + window.blt.previewUrl(it.id) + '" alt=""></div>'
+    + '<div class="hint">Double-clic ou clic droit → « Ouvrir dans l\'application » pour la visionneuse système.</div>';
+  const img = document.getElementById('pv-img');
+  if (img) img.onerror = () => { img.outerHTML = '<div class="hint warn">Impossible d\'afficher cette image.</div>'; };
+}
+
+function openAudio(it) {
+  openModal('Audio — ' + esc(it.name));
+  $('modal-body').innerHTML = '<div class="player-wrap"><audio id="pv-audio" controls autoplay src="' + window.blt.previewUrl(it.id) + '" style="width:100%"></audio></div>'
+    + '<div class="hint">Lecture en streaming depuis le drive (bltdrive://).</div>';
+}
+
+async function openPdf(it) {
+  openModal('PDF — ' + esc(it.name), true);
+  const body = $('modal-body');
+  body.innerHTML = '<div class="pdf-wrap"><div class="pdf-loading">Chargement du PDF…</div></div>'
+    + '<div class="hint">Affichage intégré. Pour la visionneuse système : clic droit → « Ouvrir dans l\'application ».</div>';
+  try {
+    const r = await fetch(window.blt.previewUrl(it.id));
+    if (!r.ok) throw new Error('Erreur ' + r.status);
+    const buf = await r.arrayBuffer();
+    const blob = new Blob([buf], { type: 'application/pdf' });
+    const url = URL.createObjectURL(blob);
+    const wrap = body.querySelector('.pdf-wrap');
+    wrap.innerHTML = '<iframe id="pv-pdf" src="' + url + '" type="application/pdf"></iframe>';
+  } catch (e) {
+    body.querySelector('.pdf-wrap').innerHTML = '<div class="hint warn">Impossible de charger le PDF : ' + esc(e.message) + '</div>';
+  }
+}
+
+function openGeneric(it) {
+  openModal('Fichier — ' + esc(it.name));
+  const body = $('modal-body');
+  body.innerHTML = '<div class="hint">Aucun aperçu pour ce type de fichier.</div>'
+    + '<div class="hint">Utilise « Ouvrir dans l\'application » pour l\'ouvrir avec un programme installé.</div>';
+  const btn = document.createElement('button');
+  btn.className = 'btn';
+  btn.textContent = '⬇ Télécharger';
+  btn.onclick = () => doDownload(it.id, it.name);
+  $('modal-actions').appendChild(btn);
+  const btn2 = document.createElement('button');
+  btn2.className = 'btn';
+  btn2.textContent = '📂 Ouvrir dans l\'application';
+  btn2.onclick = () => { closeModal(); doOpenExternal(it.id, it.name); };
+  $('modal-actions').appendChild(btn2);
+}
+
+function openVideo(id) {
   const it = itemById(id);
   if (!it) return;
   const rends = state.items.filter(r => r.renditionOf === id);
@@ -705,15 +786,12 @@ async function runDriveImport(id) {
 }
 
 // ── Modale ────────────────────────────────────────────────────
-function openModal(title) {
-  $('modal-title').innerHTML = title;
-  $('modal-body').innerHTML = '';
-  $('modal-actions').innerHTML = '';
-  $('modal-overlay').style.display = 'flex';
-}
-
 function closeModal() {
   $('modal-overlay').style.display = 'none';
+  const pv = document.getElementById('pv');
+  if (pv) { try { pv.pause(); } catch {} pv.removeAttribute('src'); pv.load(); }
+  const au = document.getElementById('pv-audio');
+  if (au) { try { au.pause(); } catch {} au.removeAttribute('src'); au.load(); }
   pvCurrent = null;
 }
 

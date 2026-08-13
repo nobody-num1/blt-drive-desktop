@@ -22,6 +22,7 @@ contextBridge.exposeInMainWorld('blt', {
   diskShareDelete: id => ipcRenderer.invoke('disk-share-delete', id),
   diskDownload: (id, name) => ipcRenderer.invoke('disk-download', id, name),
   diskZip: (id, name) => ipcRenderer.invoke('disk-zip', id, name),
+  diskOpenExternal: (id, name) => ipcRenderer.invoke('disk-open-external', id, name),
   previewUrl: id => 'bltdrive://preview/' + encodeURIComponent(id),
   getAppVersion: () => ipcRenderer.invoke('app-get-version'),
   checkUpdate: () => ipcRenderer.invoke('app-check-update'),
