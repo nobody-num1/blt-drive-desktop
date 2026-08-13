@@ -8,13 +8,19 @@ const state = {
   quotaRole: ''
 };
 
+try {
+  window.addEventListener('error', e => { try { window.blt.log('UNCAUGHT: ' + String(e.message || e.error || e) + ' @' + (e.filename||'') + ':' + e.lineno); } catch {} });
+  window.addEventListener('unhandledrejection', e => { try { window.blt.log('REJECTED: ' + String(e.reason && e.reason.message || e.reason)); } catch {} });
+} catch {}
+
 const $ = id => document.getElementById(id);
 
 function fmtSize(n) {
-  if (!n) return '0 o';
+  const num = parseFloat(n);
+  if (!isFinite(num) || num <= 0) return '0 o';
   const u = ['o', 'Ko', 'Mo', 'Go', 'To'];
   let i = 0;
-  let v = n;
+  let v = num;
   while (v >= 1024 && i < u.length - 1) { v /= 1024; i++; }
   return v.toFixed(v >= 10 || i === 0 ? 0 : 1) + ' ' + u[i];
 }
@@ -39,6 +45,7 @@ function clearError() {
 function opts() {
   return {
     includeOriginal: $('opt-orig').checked,
+    includeTracks: $('opt-tracks').checked,
     crf: parseInt($('opt-crf').value, 10) || 23
   };
 }
@@ -92,26 +99,31 @@ function applyRole(r) {
   const lk = $('import-locked');
   if (!allow && state.activeAccountId) lk.textContent = 'Connecte-toi à un compte Discord pour importer des vidéos.';
   else if (!allow) lk.textContent = 'Connecte-toi à un compte Discord pour importer des vidéos\u2009— toute personne connectée peut importer et transcoder.';
+  window.blt.log('applyRole: canImport=' + state.canImport + ' allow=' + allow + ' btnPick.disabled=' + $('btn-pick').disabled + ' btnImport.disabled=' + $('btn-import').disabled);
 }
 
 async function refresh(showErrors) {
-  const s = await window.blt.getSettings();
-  applySettings(s);
-  const r = await window.blt.testConnection();
-  clearError();
-  if (r.ok) {
-    const acc = r.account ? r.account.label : 'Connecté';
-    setBadge('✓ ' + acc, 'ok');
-    const q = r.quota || {};
-    const limitTxt = q.limit === '-1' || q.limit === '-1n' ? 'illimité' : fmtSize(q.limit);
-    $('conn-info').textContent = 'Webhook ' + (r.webhook ? 'actif' : 'INACTIF') + ' · quota ' + (r.quotaRole || '') + ' · ' + fmtSize(q.usage) + ' / ' + limitTxt;
-    applyRole(r);
-  } else {
-    setBadge(state.activeAccountId ? '✗ Connexion' : 'Non connecté', state.activeAccountId ? 'bad' : 'bad');
-    $('conn-info').textContent = '';
-    applyRole({ canImport: false });
-    if (showErrors) showError(r.error);
-  }
+  try {
+    const s = await window.blt.getSettings();
+    applySettings(s);
+    const r = await window.blt.testConnection();
+    clearError();
+    window.blt.log('refresh: r.ok=' + r.ok + ' canImport=' + r.canImport + ' activeId=' + s.activeAccountId + ' accs=' + (s.accounts||[]).length);
+    if (r.ok) {
+      window.blt.log('refresh: ok-block, before applyRole');
+      const acc = r.account ? r.account.label : 'Connecté';
+      setBadge('✓ ' + acc, 'ok');
+      const q = r.quota || {};
+      const limitTxt = q.limit === '-1' || q.limit === '-1n' ? 'illimité' : fmtSize(q.limit);
+      $('conn-info').textContent = 'Webhook ' + (r.webhook ? 'actif' : 'INACTIF') + ' · quota ' + (r.quotaRole || '') + ' · ' + fmtSize(q.usage) + ' / ' + limitTxt;
+      applyRole(r);
+    } else {
+      setBadge(state.activeAccountId ? '✗ Connexion' : 'Non connecté', state.activeAccountId ? 'bad' : 'bad');
+      $('conn-info').textContent = '';
+      applyRole({ canImport: false });
+      if (showErrors) showError(r.error);
+    }
+  } catch (e) { window.blt.log('refresh: CATCH ' + String(e && e.message || e)); }
 }
 
 async function doConnect() {

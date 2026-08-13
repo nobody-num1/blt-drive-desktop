@@ -15,5 +15,6 @@ contextBridge.exposeInMainWorld('blt', {
   checkUpdate: () => ipcRenderer.invoke('app-check-update'),
   downloadUpdate: () => ipcRenderer.invoke('app-download-update'),
   quitInstall: () => ipcRenderer.invoke('app-quit-install'),
-  onEvent: cb => { ipcRenderer.on('evt', (e, d) => cb(d)); }
+  onEvent: cb => { ipcRenderer.on('evt', (e, d) => cb(d)); },
+  log: m => ipcRenderer.send('app-log', m)
 });

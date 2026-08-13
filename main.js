@@ -7,7 +7,7 @@ const { autoUpdater } = require('electron-updater');
 
 const ffmpegPath = resolveFfmpeg();
 const { DriveApi } = require('./src/drive');
-const { transcode, probeDuration } = require('./src/transcode');
+const { transcode, probeDuration, probeStreams, extractSubtitles } = require('./src/transcode');
 const { uploadFile, downloadToFile } = require('./src/upload');
 const { mimeFor, isVideoPath } = require('./src/mime');
 
@@ -22,6 +22,12 @@ let settings = { origin: '', accounts: [], activeAccountId: '' };
 let api = null;
 let pendingDeepLink = null;
 let loginOnShow = null;
+
+function dlog(msg) {
+  try {
+    fs.appendFileSync(path.join(app.getPath('userData'), 'debug.log'), '[' + new Date().toISOString() + '] ' + msg + '\n');
+  } catch {}
+}
 
 function loadSettings() {
   try {
@@ -99,6 +105,7 @@ function applyLogin(d) {
   if (!d || !d.token) return;
   if (!settings.origin) { pendingDeepLink = d; return; }
   const acc = upsertAndActivate(d);
+  dlog('applyLogin: token=' + String(d.token||'').slice(0,8) + '… acc=' + (acc ? acc.id : 'null') + ' role=' + (d.role||'') + ' quotaRole=' + (d.quotaRole||''));
   saveSettings();
   emit({ type: 'account-connected', account: publicAccount(acc) });
   if (win && !win.isDestroyed()) {
@@ -129,6 +136,7 @@ function startCallbackServer() {
       if (req.method === 'OPTIONS') return send(204, '');
       let d = null;
       try { d = parseParams('bltdrive://local' + (req.url || '/')); } catch {}
+      dlog('callback-server: ' + req.method + ' ' + (req.url||'').slice(0,80) + ' hasToken=' + !!(d && d.token));
       if (d && d.token) applyLogin(d);
       const ok = d && d.token;
       const html = ok
@@ -178,6 +186,11 @@ function qualityName(originalName, q) {
   return n.replace(/\.[^.]+$/, '') + '_' + q + 'p.mp4';
 }
 
+function trackQualityName(originalName, q, trackNum) {
+  const n = baseName(originalName);
+  return n.replace(/\.[^.]+$/, '') + '_' + q + 'p_a' + trackNum + '.mp4';
+}
+
 function freeBytes(cfg) {
   const q = (cfg && cfg.quota) || {};
   const limit = q.limit;
@@ -217,12 +230,7 @@ async function importLocal(videos, opts) {
   if (!cfg.webhook) throw new Error('Webhook Discord non configuré sur le serveur');
   if (!cfg.canImport) throw new Error('Connexion requise pour importer');
   const qualities = (opts.qualities || [720, 480, 360]).filter(q => !isNaN(q)).sort((a, b) => a - b);
-  const plannedBytes = videos.reduce((s, v) => {
-    let size = 0;
-    try { size = fs.statSync(v).size; } catch {}
-    return s + size * (1 + qualities.length);
-  }, 0);
-  assertSpace(cfg, plannedBytes);
+  const includeTracks = opts.includeTracks !== false;
   for (const v of videos) {
     const j = path.basename(v);
     emit({ type: 'job-start', job: j });
@@ -236,22 +244,35 @@ async function importLocal(videos, opts) {
           (c, t) => emit({ type: 'phase', job: j, phase: 'upload', detail: 'Original — blocs ' + c + '/' + t, pct: t ? Math.round(c / t * 100) : 0 }));
       }
       const totalMs = await probeDuration(ffmpegPath, v);
+      const streams = await probeStreams(ffmpegPath, v);
+      const baseNameNoExt = origName.replace(/\.[^.]+$/, '');
+      const audioCount = includeTracks ? Math.max(1, streams.audio.length) : 1;
+      const subtitleTracks = includeTracks ? await extractSubtitles(ffmpegPath, v, tmp, baseNameNoExt) : [];
+      // Uploader sous-titres
+      for (const st of subtitleTracks) {
+        emit({ type: 'phase', job: j, phase: 'upload', detail: 'Upload sous-titre ' + st.subNum, pct: 0 });
+        await runUpload(api, cfg.key, cfg.webhook, st.path, st.name, 'text/vtt', opts.parentId || null,
+          (c, t) => emit({ type: 'phase', job: j, phase: 'upload', detail: 'Sub ' + st.subNum + ' — blocs ' + c + '/' + t, pct: t ? Math.round(c / t * 100) : 0 }));
+      }
       for (const q of qualities) {
-        const out = path.join(tmp, qualityName(origName, q));
-        emit({ type: 'phase', job: j, phase: 'transcode', detail: 'Transcription ' + q + 'p', pct: null });
-        await transcode(ffmpegPath, v, out, q, opts.crf || 23, ms => {
-          if (totalMs && totalMs > 0) {
-            const pct = Math.min(99, Math.round((ms / totalMs) * 100));
-            emit({ type: 'phase', job: j, phase: 'transcode', detail: 'Transcription ' + q + 'p', pct });
-          } else {
-            emit({ type: 'phase', job: j, phase: 'transcode', detail: 'Transcription ' + q + 'p', pct: null });
-          }
-        });
-        const outBytes = fs.statSync(out).size;
-        assertSpace(cfg, outBytes);
-        emit({ type: 'phase', job: j, phase: 'upload', detail: 'Upload ' + q + 'p', pct: 0 });
-        await runUpload(api, cfg.key, cfg.webhook, out, qualityName(origName, q), 'video/mp4', opts.parentId || null,
-          (c, t) => emit({ type: 'phase', job: j, phase: 'upload', detail: q + 'p — blocs ' + c + '/' + t, pct: t ? Math.round(c / t * 100) : 0 }));
+        for (let a = 0; a < audioCount; a++) {
+          const trackName = a === 0 ? qualityName(origName, q) : trackQualityName(origName, q, a + 1);
+          const out = path.join(tmp, trackName);
+          emit({ type: 'phase', job: j, phase: 'transcode', detail: 'Transcription ' + q + 'p' + (a > 0 ? ' — piste audio ' + (a + 1) : ''), pct: null });
+          await transcode(ffmpegPath, v, out, q, opts.crf || 23, ms => {
+            if (totalMs && totalMs > 0) {
+              const pct = Math.min(99, Math.round((ms / totalMs) * 100));
+              emit({ type: 'phase', job: j, phase: 'transcode', detail: 'Transcription ' + q + 'p' + (a > 0 ? ' — piste audio ' + (a + 1) : ''), pct });
+            } else {
+              emit({ type: 'phase', job: j, phase: 'transcode', detail: 'Transcription ' + q + 'p' + (a > 0 ? ' — piste audio ' + (a + 1) : ''), pct: null });
+            }
+          }, a === 0 && !streams.audio.length ? undefined : a);
+          const outBytes = fs.statSync(out).size;
+          assertSpace(cfg, outBytes);
+          emit({ type: 'phase', job: j, phase: 'upload', detail: 'Upload ' + q + 'p' + (a > 0 ? ' — piste audio ' + (a + 1) : ''), pct: 0 });
+          await runUpload(api, cfg.key, cfg.webhook, out, trackName, 'video/mp4', opts.parentId || null,
+            (c, t) => emit({ type: 'phase', job: j, phase: 'upload', detail: q + 'p' + (a > 0 ? ' (piste ' + (a + 1) + ')' : '') + ' — blocs ' + c + '/' + t, pct: t ? Math.round(c / t * 100) : 0 }));
+        }
       }
       emit({ type: 'job-end', job: j, ok: true });
     } catch (e) {
@@ -279,22 +300,36 @@ async function importDrive(fileId, opts) {
     await downloadToFile(api, cfg.key, fileId, local, (c, t) => emit({ type: 'phase', job: j, phase: 'download', detail: 'Récupération ' + c + '/' + t, pct: t ? Math.round(c / t * 100) : 0 }));
     const totalMs = await probeDuration(ffmpegPath, local);
     const qualities = (opts.qualities || [720, 480, 360]).sort((a, b) => a - b);
+    const includeTracks = opts.includeTracks !== false;
+    const streams = await probeStreams(ffmpegPath, local);
+    const baseNameNoExt = baseName(item.name).replace(/\.[^.]+$/, '');
+    const audioCount = includeTracks ? Math.max(1, streams.audio.length) : 1;
+    const subtitleTracks = includeTracks ? await extractSubtitles(ffmpegPath, local, tmp, baseNameNoExt) : [];
+    // Uploader sous-titres
+    for (const st of subtitleTracks) {
+      emit({ type: 'phase', job: j, phase: 'upload', detail: 'Upload sous-titre ' + st.subNum, pct: 0 });
+      await runUpload(api, cfg.key, cfg.webhook, st.path, st.name, 'text/vtt', item.parentId || null,
+        (c, t) => emit({ type: 'phase', job: j, phase: 'upload', detail: 'Sub ' + st.subNum + ' — blocs ' + c + '/' + t, pct: t ? Math.round(c / t * 100) : 0 }));
+    }
     for (const q of qualities) {
-      const out = path.join(tmp, qualityName(item.name, q));
-      emit({ type: 'phase', job: j, phase: 'transcode', detail: 'Transcription ' + q + 'p', pct: null });
-      await transcode(ffmpegPath, local, out, q, opts.crf || 23, ms => {
-        if (totalMs && totalMs > 0) {
-          const pct = Math.min(99, Math.round((ms / totalMs) * 100));
-          emit({ type: 'phase', job: j, phase: 'transcode', detail: 'Transcription ' + q + 'p', pct });
-        } else {
-          emit({ type: 'phase', job: j, phase: 'transcode', detail: 'Transcription ' + q + 'p', pct: null });
-        }
-      });
-      const outBytes = fs.statSync(out).size;
-      assertSpace(cfg, outBytes);
-      emit({ type: 'phase', job: j, phase: 'upload', detail: 'Upload ' + q + 'p', pct: 0 });
-      await runUpload(api, cfg.key, cfg.webhook, out, qualityName(item.name, q), 'video/mp4', item.parentId || null,
-        (c, t) => emit({ type: 'phase', job: j, phase: 'upload', detail: q + 'p — blocs ' + c + '/' + t, pct: t ? Math.round(c / t * 100) : 0 }));
+      for (let a = 0; a < audioCount; a++) {
+        const trackName = a === 0 ? qualityName(item.name, q) : trackQualityName(item.name, q, a + 1);
+        const out = path.join(tmp, trackName);
+        emit({ type: 'phase', job: j, phase: 'transcode', detail: 'Transcription ' + q + 'p' + (a > 0 ? ' — piste audio ' + (a + 1) : ''), pct: null });
+        await transcode(ffmpegPath, local, out, q, opts.crf || 23, ms => {
+          if (totalMs && totalMs > 0) {
+            const pct = Math.min(99, Math.round((ms / totalMs) * 100));
+            emit({ type: 'phase', job: j, phase: 'transcode', detail: 'Transcription ' + q + 'p' + (a > 0 ? ' — piste audio ' + (a + 1) : ''), pct });
+          } else {
+            emit({ type: 'phase', job: j, phase: 'transcode', detail: 'Transcription ' + q + 'p' + (a > 0 ? ' — piste audio ' + (a + 1) : ''), pct: null });
+          }
+        }, a > 0 ? a : undefined);
+        const outBytes = fs.statSync(out).size;
+        assertSpace(cfg, outBytes);
+        emit({ type: 'phase', job: j, phase: 'upload', detail: 'Upload ' + q + 'p' + (a > 0 ? ' — piste audio ' + (a + 1) : ''), pct: 0 });
+        await runUpload(api, cfg.key, cfg.webhook, out, trackName, 'video/mp4', item.parentId || null,
+          (c, t) => emit({ type: 'phase', job: j, phase: 'upload', detail: q + 'p' + (a > 0 ? ' (piste ' + (a + 1) + ')' : '') + ' — blocs ' + c + '/' + t, pct: t ? Math.round(c / t * 100) : 0 }));
+      }
     }
     emit({ type: 'job-end', job: j, ok: true });
     return { ok: true, id: fileId };
@@ -371,6 +406,8 @@ if (!gotLock) {
 
 app.on('window-all-closed', () => { if (process.platform !== 'darwin') app.quit(); });
 
+ipcMain.on('app-log', (e, m) => dlog('[renderer] ' + String(m || '').slice(0, 200)));
+
 ipcMain.handle('app-get-version', () => ({ version: app.getVersion(), updatable: autoUpdater.isUpdaterActive() }));
 
 ipcMain.handle('app-check-update', async () => {
@@ -393,6 +430,7 @@ ipcMain.handle('app-quit-install', () => {
 ipcMain.handle('get-settings', () => ({ origin: settings.origin, accounts: publicAccounts(), activeAccountId: settings.activeAccountId }));
 
 ipcMain.handle('save-settings', (e, s) => {
+  dlog('save-settings: newOrigin="' + ((s && s.origin) || '').trim() + '" pendingDl=' + !!pendingDeepLink + ' accounts_avant=' + (settings.accounts||[]).length);
   settings.origin = ((s && s.origin) || '').trim();
   if (pendingDeepLink) {
     const d = pendingDeepLink; pendingDeepLink = null;
@@ -405,6 +443,7 @@ ipcMain.handle('save-settings', (e, s) => {
 ipcMain.handle('connect-account', () => openExternalLogin());
 
 ipcMain.handle('disconnect-account', (e, id) => {
+  dlog('disconnect-account: id=' + id + ' accounts_avant=' + (settings.accounts||[]).length);
   const accounts = settings.accounts || [];
   settings.accounts = accounts.filter(a => a.id !== id);
   if (settings.activeAccountId === id) {
@@ -424,14 +463,15 @@ ipcMain.handle('set-active-account', (e, id) => {
 
 ipcMain.handle('test-connection', async () => {
   const a = buildApi();
-  if (!a) return { ok: false, error: 'Connecte-toi via le bouton « Se connecter »' };
+  if (!a) { dlog('test-connection: buildApi()=null origin="' + settings.origin + '" accounts=' + (settings.accounts||[]).length + ' activeId="' + settings.activeAccountId + '"'); return { ok: false, error: 'Connecte-toi via le bouton « Se connecter »' }; }
   try {
     const cfg = await a.config();
     const acc = activeAccount();
     const quotaRole = (acc && (acc.quotaRole || acc.role || '')) || '';
     const canImport = !!acc && !!cfg.canImport;
+    dlog('test-connection: ok=true canImport=' + canImport + ' cfg.canImport=' + cfg.canImport + ' acc=' + (acc ? acc.id : 'null') + ' origin=' + settings.origin);
     return { ok: true, account: publicAccount(acc), quota: cfg.quota, canImport, role: (acc && acc.role) || '', quotaRole, webhook: !!cfg.webhook, hasKey: !!cfg.key };
-  } catch (e) { return { ok: false, error: e.message }; }
+  } catch (e) { dlog('test-connection: ERROR ' + e.message); return { ok: false, error: e.message }; }
 });
 
 ipcMain.handle('pick-videos', async () => {
