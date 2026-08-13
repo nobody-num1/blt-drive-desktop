@@ -2,8 +2,12 @@ const fs = require('fs');
 const os = require('os');
 const path = require('path');
 const http = require('http');
-const { app, BrowserWindow, ipcMain, dialog, shell } = require('electron');
+const { app, BrowserWindow, ipcMain, dialog, shell, screen, protocol } = require('electron');
 const { autoUpdater } = require('electron-updater');
+
+protocol.registerSchemesAsPrivileged([
+  { scheme: 'bltdrive', privileges: { standard: true, secure: true, supportFetchAPI: true, stream: true } }
+]);
 
 const ffmpegPath = resolveFfmpeg();
 const { DriveApi } = require('./src/drive');
@@ -22,6 +26,7 @@ let settings = { origin: '', accounts: [], activeAccountId: '' };
 let api = null;
 let pendingDeepLink = null;
 let loginOnShow = null;
+let streamReady = null;
 
 function dlog(msg) {
   try {
@@ -219,8 +224,8 @@ function cleanDir(dir) {
   fs.rmSync(dir, { recursive: true, force: true });
 }
 
-async function runUpload(api, key, webhook, filePath, name, mime, parentId, onChunk) {
-  const res = await uploadFile(api, key, webhook, filePath, name, mime, parentId, onChunk);
+async function runUpload(api, key, webhook, filePath, name, mime, parentId, onChunk, label) {
+  const res = await uploadFile(api, key, webhook, filePath, name, mime, parentId, onChunk, label);
   return res;
 }
 
@@ -250,28 +255,29 @@ async function importLocal(videos, opts) {
       const subtitleTracks = includeTracks ? await extractSubtitles(ffmpegPath, v, tmp, baseNameNoExt) : [];
       // Uploader sous-titres
       for (const st of subtitleTracks) {
-        emit({ type: 'phase', job: j, phase: 'upload', detail: 'Upload sous-titre ' + st.subNum, pct: 0 });
+        emit({ type: 'phase', job: j, phase: 'upload', detail: 'Upload sous-titre ' + (st.label || st.subNum), pct: 0 });
         await runUpload(api, cfg.key, cfg.webhook, st.path, st.name, 'text/vtt', opts.parentId || null,
-          (c, t) => emit({ type: 'phase', job: j, phase: 'upload', detail: 'Sub ' + st.subNum + ' — blocs ' + c + '/' + t, pct: t ? Math.round(c / t * 100) : 0 }));
+          (c, t) => emit({ type: 'phase', job: j, phase: 'upload', detail: 'Sub ' + (st.label || st.subNum) + ' — blocs ' + c + '/' + t, pct: t ? Math.round(c / t * 100) : 0 }),
+          st.label);
       }
       for (const q of qualities) {
         for (let a = 0; a < audioCount; a++) {
+          const audioLabel = (streams.audio[a] && (streams.audio[a].title || streams.audio[a].language)) || '';
           const trackName = a === 0 ? qualityName(origName, q) : trackQualityName(origName, q, a + 1);
           const out = path.join(tmp, trackName);
           emit({ type: 'phase', job: j, phase: 'transcode', detail: 'Transcription ' + q + 'p' + (a > 0 ? ' — piste audio ' + (a + 1) : ''), pct: null });
           await transcode(ffmpegPath, v, out, q, opts.crf || 23, ms => {
-            if (totalMs && totalMs > 0) {
-              const pct = Math.min(99, Math.round((ms / totalMs) * 100));
-              emit({ type: 'phase', job: j, phase: 'transcode', detail: 'Transcription ' + q + 'p' + (a > 0 ? ' — piste audio ' + (a + 1) : ''), pct });
-            } else {
-              emit({ type: 'phase', job: j, phase: 'transcode', detail: 'Transcription ' + q + 'p' + (a > 0 ? ' — piste audio ' + (a + 1) : ''), pct: null });
-            }
+            const detail = 'Transcription ' + q + 'p' + (a > 0 ? ' — piste audio ' + (a + 1) : '');
+            if (ms === -1) emit({ type: 'phase', job: j, phase: 'transcode', detail, pct: 100 });
+            else if (totalMs && totalMs > 0) emit({ type: 'phase', job: j, phase: 'transcode', detail, pct: Math.min(100, Math.round((ms / totalMs) * 100)) });
+            else emit({ type: 'phase', job: j, phase: 'transcode', detail, pct: null });
           }, a === 0 && !streams.audio.length ? undefined : a);
           const outBytes = fs.statSync(out).size;
           assertSpace(cfg, outBytes);
           emit({ type: 'phase', job: j, phase: 'upload', detail: 'Upload ' + q + 'p' + (a > 0 ? ' — piste audio ' + (a + 1) : ''), pct: 0 });
           await runUpload(api, cfg.key, cfg.webhook, out, trackName, 'video/mp4', opts.parentId || null,
-            (c, t) => emit({ type: 'phase', job: j, phase: 'upload', detail: q + 'p' + (a > 0 ? ' (piste ' + (a + 1) + ')' : '') + ' — blocs ' + c + '/' + t, pct: t ? Math.round(c / t * 100) : 0 }));
+            (c, t) => emit({ type: 'phase', job: j, phase: 'upload', detail: q + 'p' + (a > 0 ? ' (piste ' + (a + 1) + ')' : '') + ' — blocs ' + c + '/' + t, pct: t ? Math.round(c / t * 100) : 0 }),
+            audioLabel);
         }
       }
       emit({ type: 'job-end', job: j, ok: true });
@@ -307,28 +313,29 @@ async function importDrive(fileId, opts) {
     const subtitleTracks = includeTracks ? await extractSubtitles(ffmpegPath, local, tmp, baseNameNoExt) : [];
     // Uploader sous-titres
     for (const st of subtitleTracks) {
-      emit({ type: 'phase', job: j, phase: 'upload', detail: 'Upload sous-titre ' + st.subNum, pct: 0 });
+      emit({ type: 'phase', job: j, phase: 'upload', detail: 'Upload sous-titre ' + (st.label || st.subNum), pct: 0 });
       await runUpload(api, cfg.key, cfg.webhook, st.path, st.name, 'text/vtt', item.parentId || null,
-        (c, t) => emit({ type: 'phase', job: j, phase: 'upload', detail: 'Sub ' + st.subNum + ' — blocs ' + c + '/' + t, pct: t ? Math.round(c / t * 100) : 0 }));
+        (c, t) => emit({ type: 'phase', job: j, phase: 'upload', detail: 'Sub ' + (st.label || st.subNum) + ' — blocs ' + c + '/' + t, pct: t ? Math.round(c / t * 100) : 0 }),
+        st.label);
     }
     for (const q of qualities) {
       for (let a = 0; a < audioCount; a++) {
+        const audioLabel = (streams.audio[a] && (streams.audio[a].title || streams.audio[a].language)) || '';
         const trackName = a === 0 ? qualityName(item.name, q) : trackQualityName(item.name, q, a + 1);
         const out = path.join(tmp, trackName);
         emit({ type: 'phase', job: j, phase: 'transcode', detail: 'Transcription ' + q + 'p' + (a > 0 ? ' — piste audio ' + (a + 1) : ''), pct: null });
         await transcode(ffmpegPath, local, out, q, opts.crf || 23, ms => {
-          if (totalMs && totalMs > 0) {
-            const pct = Math.min(99, Math.round((ms / totalMs) * 100));
-            emit({ type: 'phase', job: j, phase: 'transcode', detail: 'Transcription ' + q + 'p' + (a > 0 ? ' — piste audio ' + (a + 1) : ''), pct });
-          } else {
-            emit({ type: 'phase', job: j, phase: 'transcode', detail: 'Transcription ' + q + 'p' + (a > 0 ? ' — piste audio ' + (a + 1) : ''), pct: null });
-          }
+          const detail = 'Transcription ' + q + 'p' + (a > 0 ? ' — piste audio ' + (a + 1) : '');
+          if (ms === -1) emit({ type: 'phase', job: j, phase: 'transcode', detail, pct: 100 });
+          else if (totalMs && totalMs > 0) emit({ type: 'phase', job: j, phase: 'transcode', detail, pct: Math.min(100, Math.round((ms / totalMs) * 100)) });
+          else emit({ type: 'phase', job: j, phase: 'transcode', detail, pct: null });
         }, a > 0 ? a : undefined);
         const outBytes = fs.statSync(out).size;
         assertSpace(cfg, outBytes);
         emit({ type: 'phase', job: j, phase: 'upload', detail: 'Upload ' + q + 'p' + (a > 0 ? ' — piste audio ' + (a + 1) : ''), pct: 0 });
         await runUpload(api, cfg.key, cfg.webhook, out, trackName, 'video/mp4', item.parentId || null,
-          (c, t) => emit({ type: 'phase', job: j, phase: 'upload', detail: q + 'p' + (a > 0 ? ' (piste ' + (a + 1) + ')' : '') + ' — blocs ' + c + '/' + t, pct: t ? Math.round(c / t * 100) : 0 }));
+          (c, t) => emit({ type: 'phase', job: j, phase: 'upload', detail: q + 'p' + (a > 0 ? ' (piste ' + (a + 1) + ')' : '') + ' — blocs ' + c + '/' + t, pct: t ? Math.round(c / t * 100) : 0 }),
+          audioLabel);
       }
     }
     emit({ type: 'job-end', job: j, ok: true });
@@ -341,17 +348,87 @@ async function importDrive(fileId, opts) {
   }
 }
 
+function setupStreamProtocol() {
+  if (streamReady) return streamReady;
+  streamReady = protocol.handle('bltdrive', async req => {
+    try {
+      const url = new URL(req.url);
+      // bltdrive://preview/<id>  ou  bltdrive://download/<id>
+      const seg = url.hostname + url.pathname;
+      const m = seg.match(/^(preview|download)\/([^/]+)$/);
+      if (!m) return new Response('Bad request', { status: 400 });
+      const kind = m[1];
+      const id = m[2];
+      const a = buildApi();
+      if (!a) return new Response('Non connecté', { status: 401 });
+      const upstream = kind === 'preview' ? a.preview(id, req.headers.get('range') || '') : a.download(id, req.headers.get('range') || '');
+      const res = await upstream;
+      if (!res.ok) return new Response(res.statusText || ('Erreur ' + res.status), { status: res.status });
+      const hdrs = {};
+      for (const k of ['content-type', 'content-length', 'content-range', 'accept-ranges', 'cache-control']) {
+        const v = res.headers.get(k);
+        if (v) hdrs[k] = v;
+      }
+      return new Response(res.body, { status: res.status, headers: hdrs });
+    } catch (e) {
+      return new Response((e && e.message) || 'Erreur streaming', { status: 500 });
+    }
+  });
+  return streamReady;
+}
+
 function createWindow() {
-  win = new BrowserWindow({
-    width: 1080,
-    height: 760,
+  const bounds = savedWindowBounds();
+  const defaults = { width: 1080, height: 760 };
+  let hasPos = false;
+  let posX, posY;
+  if (bounds && typeof bounds.x === 'number' && typeof bounds.y === 'number') {
+    const disp = screen.getAllDisplays().find(d => {
+      const wa = d.workArea;
+      return bounds.x >= wa.x - 10 && bounds.x < wa.x + wa.width - 60 && bounds.y >= wa.y - 10 && bounds.y < wa.y + wa.height - 40;
+    });
+    if (disp) { hasPos = true; posX = bounds.x; posY = bounds.y; }
+  }
+  const opts = {
+    width: bounds ? bounds.width : defaults.width,
+    height: bounds ? bounds.height : defaults.height,
     minWidth: 720,
     minHeight: 520,
     backgroundColor: '#040323',
     title: 'BLT Drive Desktop',
     webPreferences: { preload: path.join(__dirname, 'preload.js'), contextIsolation: true, nodeIntegration: false }
-  });
+  };
+  if (hasPos) { opts.x = posX; opts.y = posY; }
+  win = new BrowserWindow(opts);
   win.loadFile(path.join(__dirname, 'renderer', 'index.html'));
+  let saveTimer = null;
+  const persist = () => {
+    if (win.isMaximized() || win.isMinimized() || win.isFullScreen()) return;
+    if (saveTimer) clearTimeout(saveTimer);
+    saveTimer = setTimeout(() => {
+      try {
+        settings.winBounds = win.getBounds();
+        saveSettings();
+      } catch {}
+    }, 300);
+  };
+  win.on('resize', persist);
+  win.on('move', persist);
+  win.on('close', () => {
+    if (win.isMaximized() || win.isMinimized() || win.isFullScreen()) return;
+    try { settings.winBounds = win.getBounds(); saveSettings(); } catch {}
+  });
+}
+
+function savedWindowBounds() {
+  try {
+    const b = settings && settings.winBounds;
+    if (!b || typeof b.width !== 'number' || typeof b.height !== 'number') return null;
+    const wa = screen.getPrimaryDisplay().workArea;
+    const w = Math.max(720, Math.min(b.width, wa.width));
+    const h = Math.max(520, Math.min(b.height, wa.height));
+    return { width: w, height: h, x: b.x, y: b.y };
+  } catch { return null; }
 }
 
 function setupAutoUpdater() {
@@ -393,6 +470,7 @@ if (!gotLock) {
       }
     }
     createWindow();
+    setupStreamProtocol();
     if (loginOnShow) {
       const d = loginOnShow; loginOnShow = null;
       win.webContents.once('did-finish-load', () => applyLogin(d));
@@ -489,6 +567,97 @@ ipcMain.handle('list-drive', async () => {
     const tree = await a.tree();
     const items = (tree.items || []).filter(i => i.type === 'file' && !i.renditionOf && (mimeFor(i.name).startsWith('video/') || isVideoPath(i.name)));
     return { items };
+  } catch (err) { return { error: err.message }; }
+});
+
+ipcMain.handle('explorer-tree', async () => {
+  const a = buildApi();
+  if (!a) return { error: 'Non connecté' };
+  try { return { items: (await a.tree()).items || [] }; }
+  catch (err) { return { error: err.message }; }
+});
+
+ipcMain.handle('disk-mkdir', async (e, name, parentId) => {
+  const a = buildApi();
+  if (!a) return { error: 'Non connecté' };
+  try { return await a.mkdir(name, parentId || null); }
+  catch (err) { return { error: err.message }; }
+});
+
+ipcMain.handle('disk-rename', async (e, id, name) => {
+  const a = buildApi();
+  if (!a) return { error: 'Non connecté' };
+  try { return await a.rename(id, name); }
+  catch (err) { return { error: err.message }; }
+});
+
+ipcMain.handle('disk-move', async (e, id, parentId) => {
+  const a = buildApi();
+  if (!a) return { error: 'Non connecté' };
+  try { return await a.move(id, parentId || null); }
+  catch (err) { return { error: err.message }; }
+});
+
+ipcMain.handle('disk-delete', async (e, id) => {
+  const a = buildApi();
+  if (!a) return { error: 'Non connecté' };
+  try { return await a.del(id); }
+  catch (err) { return { error: err.message }; }
+});
+
+ipcMain.handle('disk-shares', async () => {
+  const a = buildApi();
+  if (!a) return { error: 'Non connecté' };
+  try { return await a.shares(); }
+  catch (err) { return { error: err.message }; }
+});
+
+ipcMain.handle('disk-shared-with-me', async () => {
+  const a = buildApi();
+  if (!a) return { error: 'Non connecté' };
+  try { return await a.sharedWithMe(); }
+  catch (err) { return { error: err.message }; }
+});
+
+ipcMain.handle('disk-share-create', async (e, body) => {
+  const a = buildApi();
+  if (!a) return { error: 'Non connecté' };
+  try { return await a.createShare(body || {}); }
+  catch (err) { return { error: err.message }; }
+});
+
+ipcMain.handle('disk-share-delete', async (e, id) => {
+  const a = buildApi();
+  if (!a) return { error: 'Non connecté' };
+  try { return await a.deleteShare(id); }
+  catch (err) { return { error: err.message }; }
+});
+
+ipcMain.handle('disk-download', async (e, id, defaultName) => {
+  const a = buildApi();
+  if (!a) return { error: 'Non connecté' };
+  try {
+    const r = await dialog.showSaveDialog(win, { defaultPath: defaultName || 'fichier' });
+    if (r.canceled || !r.filePath) return { ok: true, canceled: true };
+    const res = await a.download(id);
+    if (!res.ok) return { error: 'Erreur téléchargement ' + res.status };
+    const buf = Buffer.from(await res.arrayBuffer());
+    fs.writeFileSync(r.filePath, buf);
+    return { ok: true, path: r.filePath };
+  } catch (err) { return { error: err.message }; }
+});
+
+ipcMain.handle('disk-zip', async (e, id, defaultName) => {
+  const a = buildApi();
+  if (!a) return { error: 'Non connecté' };
+  try {
+    const r = await dialog.showSaveDialog(win, { defaultPath: defaultName || 'dossier.zip' });
+    if (r.canceled || !r.filePath) return { ok: true, canceled: true };
+    const res = await a.zip(id);
+    if (!res.ok) return { error: 'Erreur ZIP ' + res.status };
+    const buf = Buffer.from(await res.arrayBuffer());
+    fs.writeFileSync(r.filePath, buf);
+    return { ok: true, path: r.filePath };
   } catch (err) { return { error: err.message }; }
 });
 

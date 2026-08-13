@@ -1,11 +1,20 @@
 const state = {
-  files: [],
-  driveVideos: [],
+  items: [],
+  folders: [],
+  currentId: null,
+  path: [],
+  selection: new Set(),
+  sort: { key: 'name', dir: 1 },
+  history: [],
+  historyIdx: -1,
+  view: 'drive', // 'drive' | 'shares' | 'shared'
   accounts: [],
   activeAccountId: '',
   canImport: false,
   role: '',
-  quotaRole: ''
+  quotaRole: '',
+  files: [],
+  connOk: false
 };
 
 try {
@@ -15,9 +24,13 @@ try {
 
 const $ = id => document.getElementById(id);
 
+function esc(s) {
+  return String(s == null ? '' : s).replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;').replace(/'/g, '&#39;');
+}
+
 function fmtSize(n) {
   const num = parseFloat(n);
-  if (!isFinite(num) || num <= 0) return '0 o';
+  if (!isFinite(num) || num <= 0) return '';
   const u = ['o', 'Ko', 'Mo', 'Go', 'To'];
   let i = 0;
   let v = num;
@@ -25,9 +38,33 @@ function fmtSize(n) {
   return v.toFixed(v >= 10 || i === 0 ? 0 : 1) + ' ' + u[i];
 }
 
+function cutName(s, max) {
+  const str = String(s || '');
+  if (str.length <= max) return str;
+  return str.slice(0, max - 1) + '…';
+}
+
+function fmtDate(iso) {
+  if (!iso) return '';
+  const d = new Date(iso);
+  if (isNaN(d.getTime())) return '';
+  const p = n => String(n).padStart(2, '0');
+  return d.getFullYear() + '-' + p(d.getMonth() + 1) + '-' + p(d.getDate()) + ' ' + p(d.getHours()) + ':' + p(d.getMinutes());
+}
+
+function fmtDateShort(iso) {
+  if (!iso) return '';
+  const d = new Date(iso);
+  if (isNaN(d.getTime())) return '';
+  const p = n => String(n).padStart(2, '0');
+  return p(d.getDate()) + '/' + p(d.getMonth() + 1) + '/' + d.getFullYear();
+}
+
 function setBadge(text, cls) {
   const b = $('conn-badge');
-  b.textContent = text;
+  const t = b.querySelector('.conn-txt');
+  if (t) t.textContent = text;
+  else b.textContent = text;
   b.className = 'conn' + (cls ? ' ' + cls : '');
 }
 
@@ -71,10 +108,10 @@ function renderAccounts() {
   el.innerHTML = state.accounts.map(a => {
     const active = a.id === state.activeAccountId;
     return '<div class="acc-item' + (active ? ' active' : '') + '">'
-      + '<span class="acc-name" title="' + a.id + '">' + (active ? '✓ ' : '') + a.label + '</span>'
+      + '<span class="acc-name" title="' + esc(a.id) + '">' + (active ? '✓ ' : '') + esc(a.label) + '</span>'
       + '<span class="acc-act">'
-      + (active ? '' : '<button class="btn tiny min" data-use="' + a.id + '">Utiliser</button>')
-      + '<button class="btn tiny danger min" data-del="' + a.id + '">✕</button>'
+      + (active ? '' : '<button class="btn tiny min" data-use="' + esc(a.id) + '">Utiliser</button>')
+      + '<button class="btn tiny danger min" data-del="' + esc(a.id) + '">✕</button>'
       + '</span></div>';
   }).join('');
   el.querySelectorAll('[data-use]').forEach(b => b.onclick = async () => {
@@ -92,14 +129,11 @@ function applyRole(r) {
   state.role = r.role || '';
   state.quotaRole = r.quotaRole || '';
   const allow = state.canImport;
-  $('import-options').style.display = allow ? '' : 'none';
-  $('import-locked').style.display = allow ? 'none' : '';
   $('btn-pick').disabled = !allow;
-  $('btn-import').disabled = !allow;
+  $('btn-new-folder').disabled = !allow;
   const lk = $('import-locked');
   if (!allow && state.activeAccountId) lk.textContent = 'Connecte-toi à un compte Discord pour importer des vidéos.';
   else if (!allow) lk.textContent = 'Connecte-toi à un compte Discord pour importer des vidéos\u2009— toute personne connectée peut importer et transcoder.';
-  window.blt.log('applyRole: canImport=' + state.canImport + ' allow=' + allow + ' btnPick.disabled=' + $('btn-pick').disabled + ' btnImport.disabled=' + $('btn-import').disabled);
 }
 
 async function refresh(showErrors) {
@@ -108,79 +142,521 @@ async function refresh(showErrors) {
     applySettings(s);
     const r = await window.blt.testConnection();
     clearError();
-    window.blt.log('refresh: r.ok=' + r.ok + ' canImport=' + r.canImport + ' activeId=' + s.activeAccountId + ' accs=' + (s.accounts||[]).length);
+    state.connOk = !!r.ok;
     if (r.ok) {
-      window.blt.log('refresh: ok-block, before applyRole');
       const acc = r.account ? r.account.label : 'Connecté';
       setBadge('✓ ' + acc, 'ok');
       const q = r.quota || {};
       const limitTxt = q.limit === '-1' || q.limit === '-1n' ? 'illimité' : fmtSize(q.limit);
-      $('conn-info').textContent = 'Webhook ' + (r.webhook ? 'actif' : 'INACTIF') + ' · quota ' + (r.quotaRole || '') + ' · ' + fmtSize(q.usage) + ' / ' + limitTxt;
+      $('status-quota').textContent = 'Quota ' + (r.quotaRole || '') + ' · ' + fmtSize(q.usage) + ' / ' + limitTxt;
       applyRole(r);
+      await loadTree();
     } else {
-      setBadge(state.activeAccountId ? '✗ Connexion' : 'Non connecté', state.activeAccountId ? 'bad' : 'bad');
-      $('conn-info').textContent = '';
+      setBadge(state.activeAccountId ? '✗ Connexion' : 'Non connecté', 'bad');
+      $('status-quota').textContent = '';
+      $('list-empty').style.display = 'block';
+      $('list-empty').textContent = 'Connecte-toi à un compte Discord pour parcourir le drive.';
+      $('list').innerHTML = '';
       applyRole({ canImport: false });
       if (showErrors) showError(r.error);
     }
   } catch (e) { window.blt.log('refresh: CATCH ' + String(e && e.message || e)); }
 }
 
-async function doConnect() {
-  clearError();
-  const origin = $('in-origin').value.trim();
-  await window.blt.saveSettings({ origin });
-  const btn = $('btn-connect');
-  btn.disabled = true;
-  $('conn-info').textContent = 'Connexion… une page de connexion s\u2019ouvre dans ton navigateur. Autorise-y le compte Discord, puis reviens ici automatiquement.';
-  try {
-    const r = await window.blt.connectAccount();
-    await refresh(true);
-    if (!r.ok) showError(r.error);
-  } finally { btn.disabled = false; }
+async function loadTree() {
+  const r = await window.blt.explorerTree();
+  if (r.error) { showError(r.error); return; }
+  state.items = r.items || [];
+  state.folders = state.items.filter(i => i.type === 'folder');
+  renderTree();
+  if (!state.path.length) { state.currentId = null; state.path = []; }
+  renderList();
 }
 
-function renderFiles() {
-  const list = $('file-list');
-  if (!state.files.length) { list.innerHTML = '<div class="muted">Aucun fichier choisi</div>'; return; }
-  list.innerHTML = state.files.map(f => {
-    const name = f.split(/[\\/]/).pop();
-    return '<div class="fitem"><span class="nm">🎬 ' + name + '</span><span class="act"><button class="btn tiny danger" data-rm="' + f + '">Retirer</button></span></div>';
-  }).join('');
-  list.querySelectorAll('[data-rm]').forEach(b => b.onclick = () => {
-    state.files = state.files.filter(x => x !== b.dataset.rm);
-    renderFiles();
+function visibleItems(parentId) {
+  return state.items.filter(i => (i.parentId || null) === parentId && !i.renditionOf && !i.subtitleOf);
+}
+
+function itemById(id) {
+  return state.items.find(i => i.id === id) || null;
+}
+
+function folderPath(id) {
+  const parts = [];
+  let cur = id;
+  let guard = 0;
+  while (cur && guard++ < 100) {
+    const it = itemById(cur);
+    if (!it) break;
+    parts.unshift(it);
+    if (!it.parentId) break;
+    cur = it.parentId;
+  }
+  return parts;
+}
+
+function pathLabel() {
+  if (state.view === 'shares') return ['Mes partages'];
+  if (state.view === 'shared') return ['Partagés avec moi'];
+  if (!state.path.length) return ['Mon Drive'];
+  return ['Mon Drive', ...state.path.map(i => i.name)];
+}
+
+// ── Navigation ────────────────────────────────────────────────
+function navigateTo(id, pushHist) {
+  if (state.view !== 'drive') { state.view = 'drive'; state.selection.clear(); }
+  state.currentId = id;
+  state.path = folderPath(id);
+  state.selection.clear();
+  if (pushHist) {
+    state.history = state.history.slice(0, state.historyIdx + 1);
+    state.history.push({ view: 'drive', id });
+    state.historyIdx = state.history.length - 1;
+  }
+  renderList();
+  renderTree();
+}
+
+function goUp() {
+  if (state.view !== 'drive') { navigateTo(null, true); return; }
+  if (!state.currentId) return;
+  const it = itemById(state.currentId);
+  navigateTo(it ? it.parentId || null : null, true);
+}
+
+function goBack() {
+  if (state.historyIdx > 0) { state.historyIdx--; applyHistory(); }
+}
+
+function goForward() {
+  if (state.historyIdx < state.history.length - 1) { state.historyIdx++; applyHistory(); }
+}
+
+function applyHistory() {
+  const h = state.history[state.historyIdx];
+  if (!h) return;
+  state.view = h.view || 'drive';
+  state.currentId = h.id || null;
+  state.path = folderPath(h.id || null);
+  state.selection.clear();
+  renderList();
+  renderTree();
+}
+
+function setView(v) {
+  state.view = v;
+  state.currentId = null;
+  state.path = [];
+  state.selection.clear();
+  renderList();
+  renderTree();
+}
+
+// ── Rendu de l'arborescence ───────────────────────────────────
+function renderTree() {
+  const el = $('tree');
+  const roots = state.folders.filter(f => !f.parentId);
+  const activePathIds = new Set(state.path.map(i => i.id));
+  if (state.view === 'drive' && state.currentId) activePathIds.add(state.currentId);
+  const html = [];
+  html.push(treeRow('root', null, 'Mon Drive', '◇', state.view === 'drive' && !state.currentId));
+  html.push(treeRow('shares', null, 'Mes partages', '🔗', state.view === 'shares'));
+  html.push(treeRow('shared', null, 'Partagés avec moi', '📥', state.view === 'shared'));
+  if (roots.length) {
+    html.push('<div class="tree-sep" style="margin:6px 0;border-top:1px solid var(--border)"></div>');
+    html.push(roots.map(f => treeNode(f, activePathIds, 0)).join(''));
+  }
+  el.innerHTML = html.join('');
+  el.querySelectorAll('[data-nav]').forEach(b => b.onclick = e => {
+    e.stopPropagation();
+    const v = b.dataset.nav;
+    if (v === 'root') navigateTo(null, true);
+    else if (v === 'shares') setView('shares');
+    else if (v === 'shared') setView('shared');
+  });
+  el.querySelectorAll('[data-open]').forEach(b => b.onclick = e => {
+    e.stopPropagation();
+    navigateTo(b.dataset.open, true);
+  });
+  el.querySelectorAll('[data-toggle]').forEach(b => b.onclick = e => {
+    e.stopPropagation();
+    const id = b.dataset.toggle;
+    const kids = el.querySelector('[data-kids="' + id + '"]');
+    if (kids) kids.style.display = kids.style.display === 'none' ? '' : 'none';
   });
 }
 
-async function renderDrive() {
-  const list = $('drive-list');
-  const btn = $('btn-refresh-drive');
-  btn.disabled = true;
-  btn.textContent = 'Chargement…';
-  const r = await window.blt.listDrive();
-  btn.disabled = false;
-  btn.textContent = '🔄 Lister les vidéos';
-  if (r.error) { list.innerHTML = '<div class="muted" style="color:var(--error)">' + r.error + '</div>'; return; }
-  state.driveVideos = r.items || [];
-  if (!state.driveVideos.length) { list.innerHTML = '<div class="muted">Aucune vidéo (original) sur le drive</div>'; return; }
-  list.innerHTML = state.driveVideos.map(v => {
-    return '<div class="fitem"><span class="nm" title="' + v.name + '">🎥 ' + v.name + '</span><span class="sz">' + fmtSize(v.size) + '</span><span class="act"><button class="btn tiny" data-drive="' + v.id + '">Transcoder</button></span></div>';
-  }).join('');
-  list.querySelectorAll('[data-drive]').forEach(b => b.onclick = () => runDriveImport(b.dataset.drive));
+function treeNode(f, activePathIds, depth) {
+  const kids = state.folders.filter(x => x.parentId === f.id);
+  const open = activePathIds.has(f.id);
+  const hasKids = kids.length > 0;
+  return '<div class="tnode">'
+    + '<div class="thead' + (state.view === 'drive' && state.currentId === f.id ? ' sel' : '') + '" data-open="' + f.id + '" style="padding-left:' + (6 + depth * 14) + 'px">'
+    + (hasKids ? '<span class="twist" data-toggle="' + f.id + '">' + (open ? '▾' : '▸') + '</span>' : '<span class="twist"></span>')
+    + '<span class="ticon icon dir">📁</span><span style="overflow:hidden;text-overflow:ellipsis;white-space:nowrap">' + esc(f.name) + '</span></div>'
+    + (hasKids ? '<div class="kids" data-kids="' + f.id + '" style="' + (open ? '' : 'display:none') + '">' + kids.map(k => treeNode(k, activePathIds, depth + 1)).join('') + '</div>' : '')
+    + '</div>';
 }
 
+function treeRow(kind, id, label, icon, sel) {
+  return '<div class="thead' + (sel ? ' sel' : '') + '" data-nav="' + kind + '"><span class="twist"></span><span class="ticon icon ' + (kind === 'root' ? 'dir' : 'file') + '">' + icon + '</span><span>' + label + '</span></div>';
+}
+
+// ── Rendu de la liste ─────────────────────────────────────────
+function renderList() {
+  const list = $('list');
+  const empty = $('list-empty');
+  $('folder-title').textContent = pathLabel()[pathLabel().length - 1] || 'Mon Drive';
+  renderAddress();
+
+  let rows = [];
+  if (state.view === 'shares') rows = buildSharesRows();
+  else if (state.view === 'shared') rows = buildSharedRows();
+  else rows = buildDriveRows();
+
+  if (!rows.length) {
+    empty.style.display = 'block';
+    empty.textContent = state.view === 'shares' ? 'Aucun partage créé — clic droit sur un fichier/dossier puis « Partager ».' : (state.view === 'shared' ? 'Aucun partage reçu.' : 'Dossier vide');
+  } else empty.style.display = 'none';
+
+  list.innerHTML = rows.join('');
+  list.querySelectorAll('[data-row]').forEach(row => {
+    const id = row.dataset.row;
+    row.onclick = e => {
+      if (e.ctrlKey) toggleSelect(id);
+      else { selectOnly(id); if (row.dataset.type === 'folder' && e.detail >= 2) navigateTo(id, true); }
+    };
+    row.ondblclick = e => {
+      const t = row.dataset.type;
+      if (t === 'folder') navigateTo(id, true);
+      else if (t === 'video') openPreview(id);
+      else if (t === 'share') openShareLink(id);
+      else if (t === 'sfile') openPreview(id);
+    };
+    row.oncontextmenu = e => { e.preventDefault(); selectOnly(id); showCtxMenu(id, e); };
+  });
+
+  const btnUp = $('btn-up');
+  btnUp.disabled = !(state.view === 'drive' && state.currentId);
+  $('btn-back').disabled = state.historyIdx <= 0;
+  $('btn-forward').disabled = state.historyIdx >= state.history.length - 1;
+  const n = state.selection.size || rows.length;
+  $('status-count').textContent = (state.selection.size ? state.selection.size + ' sélectionné(s) sur ' + rows.length : rows.length) + ' élément(s)';
+  if (state.view !== 'drive') refreshSharesRows();
+}
+
+function buildDriveRows() {
+  const items = visibleItems(state.currentId);
+  const { key, dir } = state.sort;
+  items.sort((a, b) => {
+    if (a.type !== b.type) return a.type === 'folder' ? -1 : 1;
+    if (key === 'name') return dir * (a.name || '').localeCompare(b.name || '');
+    if (key === 'size') return dir * ((a.size || 0) - (b.size || 0));
+    if (key === 'date') return dir * ((a.updatedAt || a.uploadedAt || '') < (b.updatedAt || b.uploadedAt || '') ? -1 : 1);
+    return dir * (a.name || '').localeCompare(b.name || '');
+  });
+  return items.map(i => rowHtml(i));
+}
+
+function buildSharesRows() {
+  const list = [];
+  state.myShares = state.myShares || [];
+  state.myShares.forEach(s => list.push(shareRow(s, 'share')));
+  return list;
+}
+
+function buildSharedRows() {
+  const list = [];
+  state.inboundShares = state.inboundShares || [];
+  state.inboundShares.forEach(s => list.push(shareRow(s, 'sfile')));
+  return list;
+}
+
+function shareRow(s, type) {
+  const isDir = s.type === 'folder';
+  const name = isDir ? (s.folderName || 'Dossier') : (s.fileName || 'Fichier');
+  const who = s.targetUser ? ' → ' + s.targetUser : (s.everyone ? ' → Tout le monde' : '');
+  const acc = (s.accessCount || 0) + (s.maxAccess > 0 ? '/' + s.maxAccess : '') + ' accès';
+  const icon = isDir ? '<span class="icon dir">📁</span>' : '<span class="icon file">🔗</span>';
+  const sub = (s.subtitleOf || s.renditionOf) ? '<span class="icon sub">▤</span>' : '';
+  const sel = state.selection.has('share:' + s.id) ? ' sel' : '';
+  return '<div class="row-item' + sel + '" data-row="' + s.id + '" data-type="' + type + '" data-share="1">'
+    + '<div class="c-name">' + icon + sub + '<span class="fname" title="' + esc(name) + '">' + esc(cutName(name, 60)) + who + '</span></div>'
+    + '<div class="c-size">' + (isDir ? ((s.files || []).length + ' fichier(s)') : fmtSize(s.fileSize)) + '</div>'
+    + '<div class="c-type">Partage</div>'
+    + '<div class="c-date">' + acc + '</div>'
+    + '</div>';
+}
+
+async function refreshSharesRows() {
+  try {
+    if (state.view === 'shares') {
+      const d = await window.blt.diskShares();
+      state.myShares = (d.shares || []).filter(s => !s.subtitleOf && !s.renditionOf);
+    } else if (state.view === 'shared') {
+      const d = await window.blt.diskSharedWithMe();
+      state.inboundShares = (d.shares || []).filter(s => !s.subtitleOf && !s.renditionOf);
+    }
+    renderList();
+  } catch {}
+}
+
+function openShareLink(id) {
+  const s = (state.myShares || []).find(x => x.id === id) || (state.inboundShares || []).find(x => x.id === id);
+  if (!s) return;
+  const base = ($('in-origin').value || '').trim().replace(/\/+$/, '');
+  const url = base + '/share/' + id;
+  navigator.clipboard.writeText(url).catch(() => {});
+  alert('Lien du partage :\n\n' + url + '\n\n(copié dans le presse-papiers)');
+}
+
+function rowHtml(i) {
+  const isDir = i.type === 'folder';
+  const isVideo = !isDir && (i.mime || '').startsWith('video/');
+  const isSub = !isDir && (i.subtitleOf || i.renditionOf);
+  const icon = isDir ? '<span class="icon dir">📁</span>' : isVideo ? '<span class="icon video">🎬</span>' : isSub ? '<span class="icon sub">▤</span>' : '<span class="icon file">📄</span>';
+  const type = isDir ? 'Dossier' : isVideo ? 'Vidéo' : isSub ? 'Sous-titre' : 'Fichier';
+  const sel = state.selection.has(i.id) ? ' sel' : '';
+  return '<div class="row-item' + sel + '" data-row="' + i.id + '" data-type="' + (isDir ? 'folder' : isVideo ? 'video' : 'file') + '">'
+    + '<div class="c-name">' + icon + '<span class="fname" title="' + esc(i.name) + '">' + esc(cutName(i.name, 60)) + '</span></div>'
+    + '<div class="c-size">' + fmtSize(isDir ? folderSize(i.id) : (i.size || 0)) + '</div>'
+    + '<div class="c-type">' + type + '</div>'
+    + '<div class="c-date">' + fmtDateShort(i.updatedAt || i.uploadedAt) + '</div>'
+    + '</div>';
+}
+
+function folderSize(id) {
+  let t = 0;
+  const walk = pid => visibleItems(pid).forEach(i => { if (i.type === 'folder') walk(i.id); else t += (i.size || 0); });
+  walk(id);
+  return t;
+}
+
+function selectOnly(id) {
+  state.selection = new Set([id]);
+  renderSelection();
+}
+
+function toggleSelect(id) {
+  if (state.selection.has(id)) state.selection.delete(id);
+  else state.selection.add(id);
+  renderSelection();
+}
+
+function renderSelection() {
+  document.querySelectorAll('.row-item').forEach(r => r.classList.toggle('sel', state.selection.has(r.dataset.row)));
+  const rows = document.querySelectorAll('.row-item').length;
+  $('status-count').textContent = (state.selection.size ? state.selection.size + ' sélectionné(s) sur ' + rows : rows) + ' élément(s)';
+}
+
+function renderAddress() {
+  const el = $('address');
+  const parts = pathLabel();
+  el.innerHTML = parts.map((p, i) => {
+    const last = i === parts.length - 1;
+    return (i ? '<span class="sep">›</span>' : '') + '<span class="crumb' + (last ? ' cur' : '') + '" data-addr="' + i + '">' + esc(p) + '</span>';
+  }).join('');
+  el.querySelectorAll('[data-addr]').forEach(c => c.onclick = () => {
+    const idx = parseInt(c.dataset.addr, 10);
+    if (state.view !== 'drive') { navigateTo(null, true); return; }
+    const target = state.path[idx - 1]; // index 0 = Mon Drive (root)
+    navigateTo(target ? target.id : null, true);
+  });
+}
+
+// ── Tri ───────────────────────────────────────────────────────
+function setSort(key) {
+  if (state.sort.key === key) state.sort.dir *= -1;
+  else { state.sort.key = key; state.sort.dir = 1; }
+  document.querySelectorAll('.col').forEach(c => c.classList.toggle('sorted', c.dataset.sort === key));
+  document.querySelectorAll('.col .arrow').forEach(a => a.remove());
+  const col = document.querySelector('.col[data-sort="' + key + '"]');
+  if (col) col.insertAdjacentHTML('beforeend', '<span class="arrow">' + (state.sort.dir > 0 ? '▲' : '▼') + '</span>');
+  renderList();
+}
+
+// ── Menu contextuel ───────────────────────────────────────────
+let ctxId = null;
+function showCtxMenu(id, evt) {
+  ctxId = id;
+  const it = itemById(id);
+  if (!it) return;
+  const isDir = it.type === 'folder';
+  const isVideo = !isDir && (it.mime || '').startsWith('video/');
+  closeCtxMenu();
+  const items = [
+    { label: (isDir ? '📂 Ouvrir' : isVideo ? '▶ Aperçu' : '👁 Aperçu'), act: () => { if (isDir) navigateTo(id, true); else openPreview(id); } },
+    { label: '⬇ Télécharger', act: () => doDownload(id, it.name) },
+  ];
+  if (isDir) items.push({ label: '🗜 ZIP', act: () => doZip(id, it.name) });
+  if (isVideo) items.push({ label: '⚡ Transcoder', act: () => runDriveImport(id) });
+  items.push(
+    { label: '✏ Renommer', act: () => promptRename(id, it.name) },
+    { label: '📦 Déplacer', act: () => promptMove(id) },
+    { label: '🔗 Partager', act: () => promptShare(id) },
+    { label: '🗑 Supprimer', act: () => confirmDelete(id, it.name, isDir) }
+  );
+  const menu = document.createElement('div');
+  menu.className = 'ctx-menu';
+  menu.style.cssText = 'position:fixed;z-index:80;background:var(--glass-strong);border:1px solid var(--border-strong);border-radius:var(--r-sm);box-shadow:var(--shadow-card);padding:4px;min-width:170px';
+  items.forEach((itm, i) => {
+    const b = document.createElement('button');
+    b.className = 'btn tiny ghost';
+    b.style.cssText = 'display:block;width:100%;text-align:left;border:none;background:transparent;padding:6px 10px;border-radius:4px;font-size:12px';
+    b.textContent = itm.label;
+    b.onmouseenter = () => { b.style.background = 'rgba(96,24,233,0.25)'; };
+    b.onmouseleave = () => { b.style.background = 'transparent'; };
+    b.onclick = () => { closeCtxMenu(); itm.act(); };
+    menu.appendChild(b);
+  });
+  document.body.appendChild(menu);
+  const mw = 180, mh = items.length * 30 + 10;
+  menu.style.left = Math.min(evt.clientX, window.innerWidth - mw - 8) + 'px';
+  menu.style.top = Math.min(evt.clientY, window.innerHeight - mh - 8) + 'px';
+}
+
+function closeCtxMenu() {
+  document.querySelectorAll('.ctx-menu').forEach(m => m.remove());
+}
+
+// ── Actions ───────────────────────────────────────────────────
+async function doDownload(id, name) {
+  try { await window.blt.diskDownload(id, name); }
+  catch (e) { showError(e.message); }
+}
+
+async function doZip(id, name) {
+  try { await window.blt.diskZip(id, (name || 'dossier').replace(/[\\/:*?"<>|]+/g, '_') + '.zip'); }
+  catch (e) { showError(e.message); }
+}
+
+function promptNewFolder() {
+  const name = prompt('Nom du nouveau dossier :', 'Nouveau dossier');
+  if (!name || !name.trim()) return;
+  window.blt.diskMkdir(name.trim(), state.currentId).then(r => {
+    if (r.error) showError(r.error); else loadTree();
+  });
+}
+
+function promptRename(id, curName) {
+  const name = prompt('Nouveau nom :', curName || '');
+  if (!name || !name.trim() || name === curName) return;
+  window.blt.diskRename(id, name.trim()).then(r => {
+    if (r.error) showError(r.error); else loadTree();
+  });
+}
+
+function promptMove(id) {
+  const folders = state.folders;
+  const sel = folders.map(f => f.name).join('\n');
+  const pick = prompt('Déplacer vers (colle le nom d\'un dossier, vide = racine) :\n\nDossiers :\n' + (sel || '(aucun)'), '');
+  if (pick === null) return;
+  const name = pick.trim();
+  let parentId = null;
+  if (name) {
+    const f = folders.find(x => x.name === name);
+    if (!f) { showError('Dossier « ' + name + ' » introuvable'); return; }
+    parentId = f.id;
+  }
+  window.blt.diskMove(id, parentId).then(r => {
+    if (r.error) showError(r.error); else loadTree();
+  });
+}
+
+function confirmDelete(id, name, isDir) {
+  if (!confirm('Supprimer « ' + name + ' »' + (isDir ? ' et tout son contenu' : '') + ' ?')) return;
+  window.blt.diskDelete(id).then(r => {
+    if (r.error) showError(r.error); else loadTree();
+  });
+}
+
+function promptShare(id) {
+  const it = itemById(id);
+  if (!it) return;
+  const isDir = it.type === 'folder';
+  const everyone = confirm('Partager à tout le monde (les modérateurs) ?\nAnnuler = lien privé (rien ni personne).');
+  const password = prompt('Mot de passe optionnel (vide = aucun) :', '');
+  if (password === null) return;
+  window.blt.diskShareCreate({ fileId: id, everyone, password: password || undefined, videoMode: isDir ? 'normal' : 'player' }).then(r => {
+    if (r.error) { showError(r.error); return; }
+    const base = ($('in-origin').value || '').trim().replace(/\/+$/, '');
+    const link = base + '/share/' + r.id;
+    navigator.clipboard.writeText(link).catch(() => {});
+    alert('Partage créé !\n\nLien copié : ' + link);
+  });
+}
+
+// ── Aperçu vidéo (streaming) ──────────────────────────────────
+let pvCurrent = null;
+async function openPreview(id) {
+  const it = itemById(id);
+  if (!it) return;
+  const rends = state.items.filter(r => r.renditionOf === id);
+  const subs = state.items.filter(r => r.subtitleOf === id).sort((a, b) => (a.subtitleIndex || 0) - (b.subtitleIndex || 0));
+  const tracks = {};
+  rends.forEach(r => { const t = r.audioTrack || 1; if (!tracks[t] || (r.size || 0) > (tracks[t].size || 0)) tracks[t] = r; });
+  const qualities = rends.filter(r => (r.audioTrack || 1) === 1).sort((a, b) => (parseInt(b.quality, 10) || 0) - (parseInt(a.quality, 10) || 0));
+
+  openModal('Aperçu — ' + esc(it.name));
+  const body = $('modal-body');
+  const qbar = qualities.length ? qualities.map((q, i) => '<button class="qbtn' + (i === 0 ? ' active' : '') + '" data-q="' + q.id + '">' + q.quality + '</button>').join('') : '';
+  const tbar = Object.keys(tracks).length > 1 ? Object.keys(tracks).map(t => '<button class="qbtn' + (t === '1' ? ' active' : '') + '" data-track="' + t + '">Piste ' + t + '</button>').join('') : '';
+  const sbar = subs.length ? '<button class="qbtn" data-sub="0">Sous-titres off</button>' + subs.map(s => '<button class="qbtn" data-sub="' + s.id + '">' + esc(s.label || ('Sub ' + s.subtitleIndex)) + '</button>').join('') : '';
+  body.innerHTML = '<div class="player-wrap"><video id="pv" controls autoplay style="width:100%"></video></div>'
+    + (qbar ? '<div class="player-bar"><span class="plbl">Qualité</span>' + qbar + '</div>' : '')
+    + (tbar ? '<div class="player-bar"><span class="plbl">Audio</span>' + tbar + '</div>' : '')
+    + (sbar ? '<div class="player-bar"><span class="plbl">Sous-titres</span>' + sbar + '</div>' : '')
+    + '<div class="hint">Lecture en streaming depuis le drive (bltdrive://).</div>';
+
+  const pv = body.querySelector('#pv');
+  const subTracks = subs.map(s => '<track kind="subtitles" srclang="" data-subtrack="' + s.id + '" label="' + esc(s.label || ('Sous-titres ' + s.subtitleIndex)) + '" src="' + window.blt.previewUrl(s.id) + '">').join('');
+  const setSrc = qid => {
+    pv.innerHTML = subTracks;
+    pv.src = window.blt.previewUrl(qid || id);
+    pv.load();
+  };
+  setSrc(qualities.length ? qualities[0].id : id);
+  body.querySelectorAll('[data-q]').forEach(b => b.onclick = () => {
+    body.querySelectorAll('.qbtn').forEach(x => x.classList.remove('active'));
+    b.classList.add('active');
+    setSrc(b.dataset.q);
+  });
+  body.querySelectorAll('[data-track]').forEach(b => b.onclick = () => {
+    body.querySelectorAll('[data-track]').forEach(x => x.classList.remove('active'));
+    b.classList.add('active');
+    const t = tracks[b.dataset.track];
+    setSrc(t ? t.id : id);
+  });
+  body.querySelectorAll('[data-sub]').forEach(b => b.onclick = () => {
+    body.querySelectorAll('[data-sub]').forEach(x => x.classList.remove('active'));
+    b.classList.add('active');
+    if (b.dataset.sub === '0') {
+      pv.querySelectorAll('track').forEach(tr => tr.track.mode = 'hidden');
+    } else {
+      pv.querySelectorAll('track').forEach(tr => tr.track.mode = tr.getAttribute('data-subtrack') === b.dataset.sub ? 'showing' : 'hidden');
+    }
+  });
+  pvCurrent = pv;
+}
+
+// ── Tâches / jobs ─────────────────────────────────────────────
 function jobEl(job) {
-  let el = document.querySelector('.job[data-job="' + job + '"]');
+  let el = document.querySelector('.job[data-job="' + CSS.escape(job) + '"]');
   if (el) return el;
   const empty = document.querySelector('.job-empty');
   if (empty) empty.remove();
   el = document.createElement('div');
   el.className = 'job';
   el.dataset.job = job;
-  el.innerHTML = '<div class="head"><span>' + job + '</span><span class="st">En attente</span></div><div class="detail">Préparation…</div><div class="track"><div class="fill"></div></div>';
+  el.innerHTML = '<div class="head"><span>' + esc(job) + '</span><span class="st">En attente</span></div><div class="detail">Préparation…</div><div class="track"><div class="fill"></div></div>';
   $('jobs').prepend(el);
+  updateJobCount();
   return el;
+}
+
+function updateJobCount() {
+  const n = document.querySelectorAll('.job').length;
+  $('job-count').textContent = n ? '(' + n + ')' : '';
 }
 
 function updateJob(job, data) {
@@ -200,17 +676,65 @@ function updateJob(job, data) {
   }
 }
 
-async function boot() {
-  await refresh(false);
-  try {
-    const ver = await window.blt.getAppVersion();
-    if (ver && ver.version) $('app-version').textContent = 'v' + ver.version;
-    if (ver && ver.updatable) window.blt.checkUpdate();
-  } catch {}
+// ── Import ────────────────────────────────────────────────────
+async function doPick() {
+  if (!state.canImport) { showError('Connecte-toi à un compte Discord pour importer des vidéos.'); return; }
+  const paths = await window.blt.pickVideos();
+  if (paths && paths.length) {
+    const q = collectQualities();
+    if (!q.length) { showError('Sélectionne au moins une version à générer'); return; }
+    const o = opts();
+    o.qualities = q;
+    o.parentId = state.currentId;
+    try { await window.blt.importLocal(paths, o); }
+    catch (e) { showError(e.message); }
+    setTimeout(() => refresh(false), 800);
+  }
 }
 
-function updEls() {
-  return { banner: $('update-banner'), msg: $('update-msg'), track: $('update-track'), fill: $('update-fill'), dl: $('btn-update-dl'), restart: $('btn-update-restart'), dismiss: $('btn-update-dismiss') };
+async function runDriveImport(id) {
+  if (!state.canImport) { showError('Connecte-toi à un compte Discord pour importer des vidéos.'); return; }
+  clearError();
+  const q = collectQualities();
+  if (!q.length) { showError('Sélectionne au moins une version à générer'); return; }
+  const o = opts();
+  o.qualities = q;
+  try { await window.blt.importDrive(id, o); }
+  catch (e) { showError(e.message); }
+  setTimeout(() => refresh(false), 800);
+}
+
+// ── Modale ────────────────────────────────────────────────────
+function openModal(title) {
+  $('modal-title').innerHTML = title;
+  $('modal-body').innerHTML = '';
+  $('modal-actions').innerHTML = '';
+  $('modal-overlay').style.display = 'flex';
+}
+
+function closeModal() {
+  $('modal-overlay').style.display = 'none';
+  pvCurrent = null;
+}
+
+// ── Réglages drawer ───────────────────────────────────────────
+function toggleSettings() {
+  const d = $('settings-drawer');
+  d.style.display = d.style.display === 'none' ? 'flex' : 'none';
+}
+
+// ── Boot ──────────────────────────────────────────────────────
+async function doConnect() {
+  clearError();
+  const origin = $('in-origin').value.trim();
+  await window.blt.saveSettings({ origin });
+  const btn = $('btn-connect');
+  btn.disabled = true;
+  try {
+    const r = await window.blt.connectAccount();
+    await refresh(true);
+    if (!r.ok) showError(r.error);
+  } finally { btn.disabled = false; }
 }
 
 function handleUpdate(evt) {
@@ -247,46 +771,49 @@ function handleUpdate(evt) {
   }
 }
 
+function updEls() {
+  return { banner: $('update-banner'), msg: $('update-msg'), track: $('update-track'), fill: $('update-fill'), dl: $('btn-update-dl'), restart: $('btn-update-restart'), dismiss: $('btn-update-dismiss') };
+}
+
+async function boot() {
+  await refresh(false);
+  try {
+    const ver = await window.blt.getAppVersion();
+    if (ver && ver.version) $('app-version').textContent = 'v' + ver.version;
+    if (ver && ver.updatable) window.blt.checkUpdate();
+  } catch {}
+}
+
+// ── Événements ────────────────────────────────────────────────
+document.addEventListener('click', closeCtxMenu);
+document.addEventListener('keydown', e => {
+  if (e.key === 'F5') { e.preventDefault(); refresh(false); }
+  else if (e.altKey && e.key === 'ArrowLeft') goBack();
+  else if (e.altKey && e.key === 'ArrowRight') goForward();
+  else if (e.altKey && e.key === 'ArrowUp') goUp();
+  else if (e.key === 'Escape') closeCtxMenu();
+});
+
+$('btn-settings').onclick = toggleSettings;
+$('btn-settings-close').onclick = toggleSettings;
+$('modal-close').onclick = closeModal;
+$('modal-overlay').onclick = e => { if (e.target === $('modal-overlay')) closeModal(); };
+
+$('btn-back').onclick = goBack;
+$('btn-forward').onclick = goForward;
+$('btn-up').onclick = goUp;
+$('btn-refresh').onclick = () => refresh(false);
+$('btn-new-folder').onclick = promptNewFolder;
+$('btn-pick').onclick = doPick;
+
+document.querySelectorAll('.col').forEach(c => c.onclick = () => setSort(c.dataset.sort));
+
 $('btn-connect').onclick = doConnect;
 $('btn-add').onclick = doConnect;
 $('btn-test').onclick = async () => {
   await window.blt.saveSettings({ origin: $('in-origin').value.trim() });
   await refresh(true);
 };
-
-$('btn-pick').onclick = async () => {
-  if (!state.canImport) { showError('Connecte-toi à un compte Discord pour importer des vidéos.'); return; }
-  const paths = await window.blt.pickVideos();
-  if (paths && paths.length) { state.files = paths; renderFiles(); }
-};
-
-$('btn-import').onclick = async () => {
-  if (!state.canImport) { showError('Connecte-toi à un compte Discord pour importer des vidéos.'); return; }
-  if (!state.files.length) { showError('Choisis d\u2019abord des vidéos'); return; }
-  clearError();
-  const q = collectQualities();
-  if (!q.length) { showError('Sélectionne au moins une version à générer'); return; }
-  const o = opts();
-  o.qualities = q;
-  const btn = $('btn-import');
-  btn.disabled = true;
-  try { await window.blt.importLocal(state.files, o); }
-  catch (e) { showError(e.message); }
-  finally { btn.disabled = false; refresh(false); }
-};
-
-$('btn-refresh-drive').onclick = () => renderDrive();
-
-async function runDriveImport(id) {
-  if (!state.canImport) { showError('Connecte-toi à un compte Discord pour importer des vidéos.'); return; }
-  clearError();
-  const q = collectQualities();
-  if (!q.length) { showError('Sélectionne au moins une version à générer'); return; }
-  const o = opts();
-  o.qualities = q;
-  try { await window.blt.importDrive(id, o); }
-  catch (e) { showError(e.message); }
-}
 
 window.blt.onEvent(evt => {
   if (evt.type === 'job-start') updateJob(evt.job, { state: 'En cours', detail: 'Démarrage…' });
@@ -304,9 +831,7 @@ $('btn-update-dl').onclick = async () => {
   try { await window.blt.downloadUpdate(); }
   catch (err) { e.msg.textContent = 'Erreur de téléchargement : ' + err.message; e.dl.disabled = false; }
 };
-
 $('btn-update-restart').onclick = () => window.blt.quitInstall();
-
 $('btn-update-dismiss').onclick = () => { const e = updEls(); e.banner.style.display = 'none'; };
 
 boot();

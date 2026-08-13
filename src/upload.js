@@ -53,7 +53,7 @@ async function delChunk(webhook, messageId) {
   try { await fetch(webhook + '/messages/' + messageId, { method: 'DELETE' }); } catch {}
 }
 
-async function uploadFile(api, key, webhook, filePath, name, mime, parentId, onProgress) {
+async function uploadFile(api, key, webhook, filePath, name, mime, parentId, onProgress, label) {
   const size = fs.statSync(filePath).size;
   const total = Math.max(1, Math.ceil(size / DISK_CHUNK));
   const chunks = [];
@@ -69,7 +69,7 @@ async function uploadFile(api, key, webhook, filePath, name, mime, parentId, onP
       if (onProgress) onProgress(i + 1, total);
       await sleep(120);
     }
-    const res = await api.complete({ name, mime: mime || 'application/octet-stream', size, parentId: parentId || null, chunks });
+    const res = await api.complete({ name, mime: mime || 'application/octet-stream', size, parentId: parentId || null, chunks, label: label || '' });
     return res;
   } catch (e) {
     for (const ch of chunks) await delChunk(webhook, ch.messageId);
