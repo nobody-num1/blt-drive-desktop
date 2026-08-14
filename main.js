@@ -667,6 +667,7 @@ ipcMain.handle('disk-zip', async (e, id, defaultName) => {
 const TEMP_OPEN_DIR = path.join(os.tmpdir(), 'blt-drive-open');
 let openEditsWatcher = null;
 const openEdits = new Map(); // target -> { target, id, name, mime, parentId, mtimeMs, size, lastSeen, busy }
+const openingIds = new Set(); // id -> évite les doublons de téléchargement au clic
 
 function cleanOpenDir() {
   try { fs.rmSync(TEMP_OPEN_DIR, { recursive: true, force: true }); } catch {}
@@ -751,13 +752,47 @@ async function reimportEdit(e) {
 ipcMain.handle('disk-open-external', async (e, id, name, extra) => {
   const a = buildApi();
   if (!a) return { error: 'Non connecté' };
+  if (openingIds.has(id)) return { busy: true, ok: false };
+  openingIds.add(id);
   try {
+    emit({ type: 'open-progress', id, name: name || 'fichier', pct: 0 });
     const res = await a.download(id);
-    if (!res.ok) return { error: 'Erreur téléchargement ' + res.status };
+    if (!res.ok) throw new Error('Erreur téléchargement ' + res.status);
     const safe = (name || 'fichier').replace(/[\\/:*?"<>|]+/g, '_').slice(0, 120);
     fs.mkdirSync(TEMP_OPEN_DIR, { recursive: true });
     const target = path.join(TEMP_OPEN_DIR, safe);
-    fs.writeFileSync(target, Buffer.from(await res.arrayBuffer()));
+    const total = parseInt(res.headers.get('content-length') || '0', 10);
+    const ws = fs.createWriteStream(target);
+    let received = 0;
+    let lastEmit = 0;
+    let lastPct = -2;
+    const emitProg = () => {
+      const pct = total ? Math.round(received / total * 100) : -1;
+      const now = Date.now();
+      if (now - lastEmit < 200 && pct !== 100) return;
+      lastEmit = now;
+      if (pct === lastPct && pct !== 100) return;
+      lastPct = pct;
+      emit({ type: 'open-progress', id, name: name || 'fichier', pct, received, total });
+    };
+    if (res.body && res.body.getReader) {
+      const reader = res.body.getReader();
+      while (true) {
+        const { done, value } = await reader.read();
+        if (done) break;
+        if (value && value.length) {
+          received += value.length;
+          if (!ws.write(Buffer.from(value))) await new Promise(r => ws.once('drain', r));
+          emitProg();
+        }
+      }
+    } else {
+      const buf = Buffer.from(await res.arrayBuffer());
+      ws.write(buf);
+      received = buf.length;
+      emitProg();
+    }
+    await new Promise((ok, ko) => { ws.on('finish', ok); ws.on('error', ko); ws.end(); });
     const st = fs.statSync(target);
     const mime = (extra && extra.mime) || 'application/octet-stream';
     dlog('open-external: écrit ' + target + ' (' + st.size + ' o), ouverture…');
@@ -768,6 +803,7 @@ ipcMain.handle('disk-open-external', async (e, id, name, extra) => {
     startEditWatcher();
     return { ok: true, path: target };
   } catch (err) { return { error: err.message }; }
+  finally { openingIds.delete(id); }
 });
 
 ipcMain.handle('import-local', (e, paths, opts) => {

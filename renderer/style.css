@@ -89,6 +89,8 @@ body {
     radial-gradient(700px 520px at 50% 115%, rgba(215, 166, 226, 0.12) 0%, transparent 55%),
     var(--bg-deep);
   min-height: 100vh;
+  display: flex;
+  flex-direction: column;
 }
 
 /* Top bar */
@@ -257,7 +259,9 @@ label.check input { accent-color: var(--accent); width: 15px; height: 15px; }
 .upd-fill { height: 100%; width: 0%; background: var(--grad-brand); transition: width .2s ease; border-radius: var(--r-pill); box-shadow: var(--shadow-glow-pink); }
 
 /* ── Explorateur (layout Windows) ─────────────────────────── */
-body.explorer-body { overflow: hidden; }
+body.explorer-body { overflow: hidden; height: 100vh; }
+body.explorer-body .layout.explorer { height: auto; flex: 1; min-height: 0; }
+body.explorer-body .content { display: flex; flex-direction: column; min-height: 0; }
 
 .commandbar {
   display: flex; align-items: center; gap: 10px;
@@ -313,7 +317,9 @@ body.explorer-body { overflow: hidden; }
 .tree .ticon { flex-shrink: 0; }
 .tree .kids { margin-left: 14px; display: flex; flex-direction: column; gap: 1px; }
 
-.p-explorer { display: flex; flex-direction: column; padding: 0; margin: 0; border-radius: 0; min-width: 0; flex: 1; overflow: hidden; }
+.p-explorer { display: flex; flex-direction: column; padding: 0; margin: 0; border-radius: 0; min-width: 0; flex: 1 1 auto; min-height: 0; overflow: hidden; }
+.p-jobs { flex: 0 0 auto; max-height: 190px; display: flex; flex-direction: column; }
+.p-jobs .jobs { overflow-y: auto; min-height: 0; }
 .toolbar {
   display: flex; align-items: center; gap: 10px; flex-wrap: wrap;
   padding: 8px 14px; border-bottom: 1px solid var(--border);
@@ -369,8 +375,17 @@ body.explorer-body { overflow: hidden; }
   display: flex; align-items: center; gap: 12px;
   padding: 5px 14px; font-size: 11px; color: var(--accent-light);
   background: var(--glass-strong); border-top: 1px solid var(--border);
+  flex-shrink: 0;
 }
 .statusbar .spacer { flex: 1; }
+
+#dlg-input {
+  width: 100%; background: var(--glass-field);
+  border: 1px solid var(--border);
+  color: var(--text); border-radius: var(--r-sm);
+  padding: 9px 11px; font-size: 13px; font-family: inherit;
+}
+#dlg-input:focus { outline: none; border-color: var(--border-focus); background: rgba(97, 94, 226, 0.08); box-shadow: var(--shadow-glow-blue); }
 
 /* Drawer (Réglages) */
 .drawer {
@@ -398,7 +413,9 @@ body.explorer-body { overflow: hidden; }
 
 .modal label { margin-bottom: 12px; }
 .modal .hint { margin-top: 4px; }
-.player-wrap { background: #000; border-radius: var(--r-md); overflow: hidden; margin-bottom: 12px; }
+.player-wrap { background: #000; border-radius: var(--r-md); overflow: hidden; margin-bottom: 12px; min-height: 80px; }
+.player-loading { display: flex; align-items: center; justify-content: center; color: var(--surface); font-size: 13px; padding: 28px; font-family: var(--font-mono); }
+.player-loading.warn { color: var(--error); }
 .player-wrap video { width: 100%; max-height: 52vh; display: block; background: #000; }
 .player-bar { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; margin-top: 8px; }
 .player-bar .qbtn { background: var(--glass-field); border: 1px solid var(--border); color: var(--text); border-radius: var(--r-sm); padding: 5px 10px; font-size: 11px; cursor: pointer; font-family: inherit; }

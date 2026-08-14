@@ -407,7 +407,7 @@ function openShareLink(id) {
   const base = ($('in-origin').value || '').trim().replace(/\/+$/, '');
   const url = base + '/share/' + id;
   navigator.clipboard.writeText(url).catch(() => {});
-  alert('Lien du partage :\n\n' + url + '\n\n(copié dans le presse-papiers)');
+  dlgAlert('Lien du partage :\n\n' + url + '\n\n(copié dans le presse-papiers)');
 }
 
 function rowHtml(i) {
@@ -532,9 +532,15 @@ async function doOpenExternal(id, name) {
   try {
     clearError();
     const it = itemById(id);
+    openModal('Ouverture en cours…', false);
+    $('modal-body').innerHTML = '<div class="muted">Téléchargement de « ' + esc(name || 'fichier') + ' » depuis le drive…</div>'
+      + '<div class="job" style="margin-top:14px"><div class="detail" id="open-progress-txt">Démarrage…</div><div class="track"><div class="fill" id="open-progress-bar"></div></div></div>';
+    openingBusy = true;
     const r = await window.blt.diskOpenExternal(id, name, it ? { mime: it.mime || '', parentId: it.parentId || null } : {});
-    if (r && r.error) showError(r.error);
-    else if (r && r.ok) {
+    openingBusy = false;
+    if (r && r.busy) { closeModal(); showError('Ce fichier est déjà en cours d\'ouverture.'); return; }
+    if (r && r.error) { closeModal(); showError(r.error); return; }
+    if (r && r.ok) {
       openModal('Ouvert dans une application', false);
       $('modal-body').innerHTML = '<div class="muted">« ' + esc(name || 'fichier') + ' » a été ouvert avec le programme installé.</div>'
         + '<div class="hint">✏️ Modifie le fichier puis <b>enregistre-le</b> (Ctrl+S) : il sera <b>réimporté automatiquement</b> dans le drive à ta place, et la copie temporaire sera supprimée. Tu peux fermer cette fenêtre.</div>';
@@ -544,7 +550,7 @@ async function doOpenExternal(id, name) {
       btn.onclick = closeModal;
       $('modal-actions').appendChild(btn);
     }
-  } catch (e) { showError(e.message); }
+  } catch (e) { openingBusy = false; closeModal(); showError(e.message); }
 }
 
 async function doZip(id, name) {
@@ -552,43 +558,106 @@ async function doZip(id, name) {
   catch (e) { showError(e.message); }
 }
 
+// ── Boîtes de dialogue (remplace prompt/confirm/alert natifs, inopérants dans Electron) ──
+let dlgResolve = null;
+let openingBusy = false;
+
+function dlgShow(title, bodyHtml, actions) {
+  openModal(title, false);
+  $('modal-body').innerHTML = bodyHtml;
+  $('modal-actions').innerHTML = '';
+  (actions || []).forEach(a => {
+    const b = document.createElement('button');
+    b.className = 'btn ' + (a.cls || '');
+    b.textContent = a.label;
+    b.onclick = () => { dlgClose(a.value); };
+    $('modal-actions').appendChild(b);
+  });
+  const inp = document.getElementById('dlg-input');
+  if (inp) { inp.focus(); inp.select(); }
+}
+
+function dlgClose(value) {
+  const r = dlgResolve;
+  dlgResolve = null;
+  closeModal();
+  if (r) r(value);
+}
+
+function dlgPrompt(message, def) {
+  return new Promise(resolve => {
+    dlgResolve = resolve;
+    dlgShow('Demande', '<div class="muted" style="margin-bottom:12px">' + esc(message).replace(/\n/g, '<br>') + '</div>'
+      + '<input id="dlg-input" type="text" value="' + esc(def || '') + '">',
+      [{ label: 'Annuler', value: null, cls: 'ghost' }, { label: 'OK', value: '__ok__', cls: 'primary' }]);
+    const inp = document.getElementById('dlg-input');
+    inp.onkeydown = ev => {
+      if (ev.key === 'Enter') dlgClose(inp.value);
+      else if (ev.key === 'Escape') dlgClose(null);
+    };
+    const ok = [...$('modal-actions').children].find(b => b.textContent === 'OK');
+    if (ok) ok.onclick = () => dlgClose(inp.value);
+  });
+}
+
+function dlgConfirm(message) {
+  return new Promise(resolve => {
+    dlgResolve = resolve;
+    dlgShow('Confirmation', '<div class="muted">' + esc(message).replace(/\n/g, '<br>') + '</div>',
+      [{ label: 'Annuler', value: false, cls: 'ghost' }, { label: 'OK', value: true, cls: 'primary' }]);
+  });
+}
+
+function dlgAlert(message) {
+  return new Promise(resolve => {
+    dlgResolve = resolve;
+    dlgShow('Information', '<div class="muted">' + esc(message).replace(/\n/g, '<br>') + '</div>',
+      [{ label: 'OK', value: true, cls: 'primary' }]);
+  });
+}
+
 function promptNewFolder() {
-  const name = prompt('Nom du nouveau dossier :', 'Nouveau dossier');
-  if (!name || !name.trim()) return;
-  window.blt.diskMkdir(name.trim(), state.currentId).then(r => {
-    if (r.error) showError(r.error); else loadTree();
+  dlgPrompt('Nom du nouveau dossier :', 'Nouveau dossier').then(name => {
+    if (!name || !name.trim()) return;
+    window.blt.diskMkdir(name.trim(), state.currentId).then(r => {
+      if (r.error) showError(r.error); else loadTree();
+    });
   });
 }
 
 function promptRename(id, curName) {
-  const name = prompt('Nouveau nom :', curName || '');
-  if (!name || !name.trim() || name === curName) return;
-  window.blt.diskRename(id, name.trim()).then(r => {
-    if (r.error) showError(r.error); else loadTree();
+  dlgPrompt('Nouveau nom :', curName || '').then(name => {
+    if (!name || !name.trim() || name === curName) return;
+    window.blt.diskRename(id, name.trim()).then(r => {
+      if (r.error) showError(r.error); else loadTree();
+    });
   });
 }
 
 function promptMove(id) {
   const folders = state.folders;
   const sel = folders.map(f => f.name).join('\n');
-  const pick = prompt('Déplacer vers (colle le nom d\'un dossier, vide = racine) :\n\nDossiers :\n' + (sel || '(aucun)'), '');
-  if (pick === null) return;
-  const name = pick.trim();
-  let parentId = null;
-  if (name) {
-    const f = folders.find(x => x.name === name);
-    if (!f) { showError('Dossier « ' + name + ' » introuvable'); return; }
-    parentId = f.id;
-  }
-  window.blt.diskMove(id, parentId).then(r => {
-    if (r.error) showError(r.error); else loadTree();
+  dlgPrompt('Déplacer vers (colle le nom d\'un dossier, vide = racine) :\n\nDossiers :\n' + (sel || '(aucun)'), '').then(pick => {
+    if (pick === null) return;
+    const name = pick.trim();
+    let parentId = null;
+    if (name) {
+      const f = folders.find(x => x.name === name);
+      if (!f) { showError('Dossier « ' + name + ' » introuvable'); return; }
+      parentId = f.id;
+    }
+    window.blt.diskMove(id, parentId).then(r => {
+      if (r.error) showError(r.error); else loadTree();
+    });
   });
 }
 
 function confirmDelete(id, name, isDir) {
-  if (!confirm('Supprimer « ' + name + ' »' + (isDir ? ' et tout son contenu' : '') + ' ?')) return;
-  window.blt.diskDelete(id).then(r => {
-    if (r.error) showError(r.error); else loadTree();
+  dlgConfirm('Supprimer « ' + name + ' »' + (isDir ? ' et tout son contenu' : '') + ' ?').then(ok => {
+    if (!ok) return;
+    window.blt.diskDelete(id).then(r => {
+      if (r.error) showError(r.error); else loadTree();
+    });
   });
 }
 
@@ -596,15 +665,17 @@ function promptShare(id) {
   const it = itemById(id);
   if (!it) return;
   const isDir = it.type === 'folder';
-  const everyone = confirm('Partager à tout le monde (les modérateurs) ?\nAnnuler = lien privé (rien ni personne).');
-  const password = prompt('Mot de passe optionnel (vide = aucun) :', '');
-  if (password === null) return;
-  window.blt.diskShareCreate({ fileId: id, everyone, password: password || undefined, videoMode: isDir ? 'normal' : 'player' }).then(r => {
-    if (r.error) { showError(r.error); return; }
-    const base = ($('in-origin').value || '').trim().replace(/\/+$/, '');
-    const link = base + '/share/' + r.id;
-    navigator.clipboard.writeText(link).catch(() => {});
-    alert('Partage créé !\n\nLien copié : ' + link);
+  dlgConfirm('Partager à tout le monde (les modérateurs) ?\nAnnuler = lien privé (rien ni personne).').then(everyone => {
+    dlgPrompt('Mot de passe optionnel (vide = aucun) :', '').then(password => {
+      if (password === null) return;
+      window.blt.diskShareCreate({ fileId: id, everyone, password: password || undefined, videoMode: isDir ? 'normal' : 'player' }).then(r => {
+        if (r.error) { showError(r.error); return; }
+        const base = ($('in-origin').value || '').trim().replace(/\/+$/, '');
+        const link = base + '/share/' + r.id;
+        navigator.clipboard.writeText(link).catch(() => {});
+        dlgAlert('Partage créé !\n\nLien copié : ' + link);
+      });
+    });
   });
 }
 
@@ -693,18 +764,33 @@ function openVideo(id) {
   const qbar = qualities.length ? qualities.map((q, i) => '<button class="qbtn' + (i === 0 ? ' active' : '') + '" data-q="' + q.id + '">' + q.quality + '</button>').join('') : '';
   const tbar = Object.keys(tracks).length > 1 ? Object.keys(tracks).map(t => '<button class="qbtn' + (t === '1' ? ' active' : '') + '" data-track="' + t + '">Piste ' + t + '</button>').join('') : '';
   const sbar = subs.length ? '<button class="qbtn" data-sub="0">Sous-titres off</button>' + subs.map(s => '<button class="qbtn" data-sub="' + s.id + '">' + esc(s.label || ('Sub ' + s.subtitleIndex)) + '</button>').join('') : '';
-  body.innerHTML = '<div class="player-wrap"><video id="pv" controls autoplay style="width:100%"></video></div>'
+  body.innerHTML = '<div class="player-wrap"><div class="player-loading" id="pv-loading">Chargement du streaming…</div><video id="pv" controls autoplay style="width:100%;display:none"></video></div>'
     + (qbar ? '<div class="player-bar"><span class="plbl">Qualité</span>' + qbar + '</div>' : '')
     + (tbar ? '<div class="player-bar"><span class="plbl">Audio</span>' + tbar + '</div>' : '')
     + (sbar ? '<div class="player-bar"><span class="plbl">Sous-titres</span>' + sbar + '</div>' : '')
     + '<div class="hint">Lecture en streaming depuis le drive (bltdrive://).</div>';
 
   const pv = body.querySelector('#pv');
+  const loading = body.querySelector('#pv-loading');
   const subTracks = subs.map(s => '<track kind="subtitles" srclang="" data-subtrack="' + s.id + '" label="' + esc(s.label || ('Sous-titres ' + s.subtitleIndex)) + '" src="' + window.blt.previewUrl(s.id) + '">').join('');
   const setSrc = qid => {
+    loading.style.display = '';
+    pv.style.display = 'none';
     pv.innerHTML = subTracks;
     pv.src = window.blt.previewUrl(qid || id);
     pv.load();
+  };
+  pv.oncanplay = () => { loading.style.display = 'none'; pv.style.display = ''; };
+  pv.onwaiting = () => { loading.style.display = ''; };
+  pv.onplaying = () => { loading.style.display = 'none'; };
+  pv.onerror = () => {
+    loading.textContent = 'Impossible de lire ce streaming. Essaie « Ouvrir dans l\'application ».';
+    loading.classList.add('warn');
+    const fall = document.createElement('button');
+    fall.className = 'btn primary';
+    fall.textContent = '📂 Ouvrir dans l\'application';
+    fall.onclick = () => { closeModal(); doOpenExternal(it.id, it.name); };
+    $('modal-actions').appendChild(fall);
   };
   setSrc(qualities.length ? qualities[0].id : id);
   body.querySelectorAll('[data-q]').forEach(b => b.onclick = () => {
@@ -797,6 +883,11 @@ async function runDriveImport(id) {
 
 // ── Modale ────────────────────────────────────────────────────
 function closeModal() {
+  if (openingBusy) return;
+  if (dlgResolve) { const r = dlgResolve; dlgResolve = null; closeModalNow(); r(null); return; }
+  closeModalNow();
+}
+function closeModalNow() {
   $('modal-overlay').style.display = 'none';
   const pv = document.getElementById('pv');
   if (pv) { try { pv.pause(); } catch {} pv.removeAttribute('src'); pv.load(); }
@@ -910,6 +1001,22 @@ window.blt.onEvent(evt => {
   else if (evt.type === 'error') showError(evt.detail);
   else if (evt.type === 'update') handleUpdate(evt);
   else if (evt.type === 'account-connected') refresh(true);
+  else if (evt.type === 'open-progress') {
+    const bar = document.getElementById('open-progress-bar');
+    if (!bar) return;
+    const txt = document.getElementById('open-progress-txt');
+    const sz = (evt.received ? fmtSize(evt.received) : '0');
+    if (typeof evt.pct === 'number' && evt.pct >= 0) {
+      const pct = Math.min(100, Math.max(0, evt.pct));
+      bar.classList.remove('indet');
+      bar.style.width = pct + '%';
+      if (txt) txt.textContent = pct + '%' + (evt.total ? ' — ' + sz + ' / ' + fmtSize(evt.total) : ' — ' + sz);
+    } else {
+      bar.classList.add('indet');
+      bar.style.width = '';
+      if (txt) txt.textContent = sz + ' téléchargés…';
+    }
+  }
   else if (evt.type === 'reimport-start') setBadge('Réimport : ' + (evt.name || 'fichier') + '…', 'busy');
   else if (evt.type === 'reimport-ok') {
     setBadge('Connecté', 'ok');
