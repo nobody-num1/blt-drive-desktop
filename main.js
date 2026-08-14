@@ -756,12 +756,10 @@ ipcMain.handle('disk-open-external', async (e, id, name, extra) => {
   openingIds.add(id);
   try {
     emit({ type: 'open-progress', id, name: name || 'fichier', pct: 0 });
-    const res = await a.download(id);
-    if (!res.ok) throw new Error('Erreur téléchargement ' + res.status);
     const safe = (name || 'fichier').replace(/[\\/:*?"<>|]+/g, '_').slice(0, 120);
     fs.mkdirSync(TEMP_OPEN_DIR, { recursive: true });
     const target = path.join(TEMP_OPEN_DIR, safe);
-    const total = parseInt(res.headers.get('content-length') || '0', 10);
+    const total = (extra && extra.size) || 0;
     const ws = fs.createWriteStream(target);
     let received = 0;
     let lastEmit = 0;
@@ -775,22 +773,22 @@ ipcMain.handle('disk-open-external', async (e, id, name, extra) => {
       lastPct = pct;
       emit({ type: 'open-progress', id, name: name || 'fichier', pct, received, total });
     };
-    if (res.body && res.body.getReader) {
-      const reader = res.body.getReader();
-      while (true) {
-        const { done, value } = await reader.read();
-        if (done) break;
-        if (value && value.length) {
-          received += value.length;
-          if (!ws.write(Buffer.from(value))) await new Promise(r => ws.once('drain', r));
-          emitProg();
-        }
-      }
-    } else {
+    const RANGE_STEP = 16 * 1024 * 1024;
+    let start = 0;
+    let guard = 0;
+    while (true) {
+      if (total && received >= total) break;
+      const end = total ? Math.min(start + RANGE_STEP - 1, total - 1) : start + RANGE_STEP - 1;
+      const res = await a.download(id, 'bytes=' + start + '-' + end);
+      if (!res.ok) throw new Error('Erreur téléchargement ' + res.status);
       const buf = Buffer.from(await res.arrayBuffer());
-      ws.write(buf);
-      received = buf.length;
+      if (!buf.length) break;
+      if (!ws.write(buf)) await new Promise(r => ws.once('drain', r));
+      received += buf.length;
       emitProg();
+      if (buf.length < RANGE_STEP) break;
+      start += RANGE_STEP;
+      if (++guard > 10000) throw new Error('Téléchargement interrompu (trop de blocs)');
     }
     await new Promise((ok, ko) => { ws.on('finish', ok); ws.on('error', ko); ws.end(); });
     const st = fs.statSync(target);

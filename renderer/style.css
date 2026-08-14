@@ -361,6 +361,9 @@ body.explorer-body .content { display: flex; flex-direction: column; min-height:
 }
 .row-item:hover { background: var(--glass-hover); }
 .row-item.sel { background: rgba(96, 24, 233, 0.25); box-shadow: inset 0 0 0 1px rgba(96, 24, 233, 0.5); }
+.row-item.draggable { cursor: grab; }
+.row-item.dragging { opacity: 0.4; }
+.row-item.drop-hover, .tree .thead.drop-hover { background: rgba(96, 24, 233, 0.35); box-shadow: inset 0 0 0 1px rgba(96, 24, 233, 0.8); }
 .c-name { display: flex; align-items: center; gap: 8px; min-width: 0; overflow: hidden; }
 .c-name .fname { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .c-size, .c-date, .c-type { font-family: var(--font-mono); font-size: 11px; color: var(--accent-light); }

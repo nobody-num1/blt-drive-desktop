@@ -12,7 +12,7 @@ function probeDuration(ffmpeg, inputPath) {
     p.on('error', reject);
     p.on('close', () => {
       const m = err.match(/Duration:\s*(\d+):(\d+):(\d+(?:\.\d+)?)/);
-      if (m) resolve(parseInt(m[1], 10) * 3600 + parseInt(m[2], 10) * 60 + parseFloat(m[3]));
+      if (m) resolve((parseInt(m[1], 10) * 3600 + parseInt(m[2], 10) * 60 + parseFloat(m[3])) * 1000);
       else resolve(0);
     });
   });

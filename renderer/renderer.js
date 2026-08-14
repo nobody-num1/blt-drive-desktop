@@ -284,6 +284,9 @@ function renderTree() {
     const kids = el.querySelector('[data-kids="' + id + '"]');
     if (kids) kids.style.display = kids.style.display === 'none' ? '' : 'none';
   });
+  el.querySelectorAll('.thead[data-open]').forEach(b => attachDropTarget(b, b.dataset.open));
+  const rootRow = el.querySelector('.thead[data-nav="root"]');
+  if (rootRow) attachDropTarget(rootRow, null);
 }
 
 function treeNode(f, activePathIds, depth) {
@@ -324,7 +327,7 @@ function renderList() {
     const id = row.dataset.row;
     row.onclick = e => {
       if (e.ctrlKey) toggleSelect(id);
-      else { selectOnly(id); if (row.dataset.type === 'folder' && e.detail >= 2) navigateTo(id, true); }
+      else selectOnly(id);
     };
     row.ondblclick = e => {
       const t = row.dataset.type;
@@ -334,6 +337,10 @@ function renderList() {
       else if (t === 'sfile') openPreview(id);
     };
     row.oncontextmenu = e => { e.preventDefault(); selectOnly(id); showCtxMenu(id, e); };
+    if (state.view === 'drive') {
+      attachDragSource(row, id);
+      if (row.dataset.type === 'folder') attachDropTarget(row, id);
+    }
   });
 
   const btnUp = $('btn-up');
@@ -536,7 +543,7 @@ async function doOpenExternal(id, name) {
     $('modal-body').innerHTML = '<div class="muted">Téléchargement de « ' + esc(name || 'fichier') + ' » depuis le drive…</div>'
       + '<div class="job" style="margin-top:14px"><div class="detail" id="open-progress-txt">Démarrage…</div><div class="track"><div class="fill" id="open-progress-bar"></div></div></div>';
     openingBusy = true;
-    const r = await window.blt.diskOpenExternal(id, name, it ? { mime: it.mime || '', parentId: it.parentId || null } : {});
+    const r = await window.blt.diskOpenExternal(id, name, it ? { mime: it.mime || '', parentId: it.parentId || null, size: it.size || 0 } : {});
     openingBusy = false;
     if (r && r.busy) { closeModal(); showError('Ce fichier est déjà en cours d\'ouverture.'); return; }
     if (r && r.error) { closeModal(); showError(r.error); return; }
@@ -649,6 +656,73 @@ function promptMove(id) {
     window.blt.diskMove(id, parentId).then(r => {
       if (r.error) showError(r.error); else loadTree();
     });
+  });
+}
+
+// ── Glisser-déposer (déplacer fichiers/dossiers) ─────────────
+let dragIds = null;
+
+function folderDescendants(id) {
+  const out = new Set();
+  const walk = pid => state.items.forEach(i => { if (i.type === 'folder' && (i.parentId || null) === pid && !out.has(i.id)) { out.add(i.id); walk(i.id); } });
+  walk(id);
+  return out;
+}
+
+function clearDropHover() {
+  document.querySelectorAll('.drop-hover').forEach(x => x.classList.remove('drop-hover'));
+}
+
+function moveDragSelection(targetId) {
+  const ids = (dragIds || []).filter(x => x && x !== targetId);
+  dragIds = null;
+  clearDropHover();
+  if (!ids.length) return;
+  for (const id of ids) {
+    const f = itemById(id);
+    if (f && f.type === 'folder' && targetId && folderDescendants(id).has(targetId)) {
+      showError('Impossible de déplacer « ' + f.name + ' » dans son propre contenu.');
+      return;
+    }
+  }
+  (async () => {
+    for (const id of ids) {
+      const it = itemById(id);
+      if (it && (it.parentId || null) === targetId) continue;
+      try { const r = await window.blt.diskMove(id, targetId || null); if (r.error) { showError(r.error); return; } }
+      catch (e) { showError(e.message); return; }
+    }
+    await loadTree();
+    if (targetId) navigateTo(targetId, true);
+  })();
+}
+
+function attachDragSource(row, id) {
+  row.draggable = true;
+  row.classList.add('draggable');
+  row.addEventListener('dragstart', e => {
+    const sel = [...state.selection];
+    dragIds = sel.length && sel.includes(id) ? sel : [id];
+    e.dataTransfer.effectAllowed = 'move';
+    e.dataTransfer.setData('text/plain', dragIds.join(','));
+    row.classList.add('dragging');
+  });
+  row.addEventListener('dragend', () => { dragIds = null; row.classList.remove('dragging'); clearDropHover(); });
+}
+
+function attachDropTarget(row, id) {
+  row.addEventListener('dragover', e => {
+    if (!dragIds) return;
+    e.preventDefault();
+    e.dataTransfer.dropEffect = 'move';
+    row.classList.add('drop-hover');
+  });
+  row.addEventListener('dragleave', () => row.classList.remove('drop-hover'));
+  row.addEventListener('drop', e => {
+    e.preventDefault();
+    e.stopPropagation();
+    row.classList.remove('drop-hover');
+    moveDragSelection(id);
   });
 }
 
@@ -773,26 +847,58 @@ function openVideo(id) {
   const pv = body.querySelector('#pv');
   const loading = body.querySelector('#pv-loading');
   const subTracks = subs.map(s => '<track kind="subtitles" srclang="" data-subtrack="' + s.id + '" label="' + esc(s.label || ('Sous-titres ' + s.subtitleIndex)) + '" src="' + window.blt.previewUrl(s.id) + '">').join('');
+  let stalled = false;
+  let stallTimer = null;
+  const clearStall = () => { if (stallTimer) { clearTimeout(stallTimer); stallTimer = null; } };
+  const showError = msg => {
+    clearStall();
+    loading.textContent = msg;
+    loading.classList.add('warn');
+    const actions = $('modal-actions');
+    actions.innerHTML = '';
+    if (!rends.length) {
+      const tc = document.createElement('button');
+      tc.className = 'btn primary';
+      tc.textContent = '⚡ Transcoder cette vidéo';
+      tc.onclick = async () => { closeModal(); await runDriveImport(it.id); };
+      actions.appendChild(tc);
+    }
+    const fall = document.createElement('button');
+    fall.className = 'btn' + (rends.length ? ' primary' : '');
+    fall.textContent = '📂 Ouvrir dans l\'application';
+    fall.onclick = () => { closeModal(); doOpenExternal(it.id, it.name); };
+    actions.appendChild(fall);
+    const dl = document.createElement('button');
+    dl.className = 'btn';
+    dl.textContent = '⬇ Télécharger l\'original';
+    dl.onclick = () => { closeModal(); doDownload(it.id, it.name); };
+    actions.appendChild(dl);
+  };
   const setSrc = qid => {
+    loading.classList.remove('warn');
+    loading.textContent = 'Chargement du streaming…';
     loading.style.display = '';
     pv.style.display = 'none';
     pv.innerHTML = subTracks;
     pv.src = window.blt.previewUrl(qid || id);
     pv.load();
+    clearStall();
+    stallTimer = setTimeout(() => { if (pv.readyState < 2 && !pv.error) showError('Le chargement du streaming semble bloqué. Essaie de transcoder la vidéo ou de l\'ouvrir dans l\'application.'); }, 12000);
   };
-  pv.oncanplay = () => { loading.style.display = 'none'; pv.style.display = ''; };
-  pv.onwaiting = () => { loading.style.display = ''; };
-  pv.onplaying = () => { loading.style.display = 'none'; };
+  pv.oncanplay = () => { clearStall(); loading.style.display = 'none'; pv.style.display = ''; };
+  pv.onwaiting = () => { if (!stalled) loading.style.display = ''; };
+  pv.onplaying = () => { stalled = false; clearStall(); loading.style.display = 'none'; };
   pv.onerror = () => {
-    loading.textContent = 'Impossible de lire ce streaming. Essaie « Ouvrir dans l\'application ».';
-    loading.classList.add('warn');
-    const fall = document.createElement('button');
-    fall.className = 'btn primary';
-    fall.textContent = '📂 Ouvrir dans l\'application';
-    fall.onclick = () => { closeModal(); doOpenExternal(it.id, it.name); };
-    $('modal-actions').appendChild(fall);
+    if (pv.error && pv.error.code === 4) { showError('Le format de cette vidéo n\'est pas lisible dans l\'application (codec non supporté).'); return; }
+    showError('Impossible de lire ce streaming. Essaie de transcoder la vidéo ou de l\'ouvrir dans l\'application.');
   };
+  // Formats connus non décodables par Chromium (pas de codec HEVC/x265) : avertir d'emblée si pas de rendition.
+  const nameL = (it.name || '').toLowerCase();
+  const isHardFormat = /\.(mkv|flv|avi|wmv|ts|m2ts|vob|rmvb|mov)$/i.test(nameL) || /x265|hevc/i.test(nameL);
   setSrc(qualities.length ? qualities[0].id : id);
+  if (!qualities.length && isHardFormat) {
+    setTimeout(() => { if (pv.readyState < 2 && !pv.error) showError('Cette vidéo (' + (nameL.match(/\.[^.]+$/) || [''])[0].slice(1).toUpperCase() + '/x265) n\'est généralement pas lisible directement. Transcris-la en MP4.'); }, 600);
+  }
   body.querySelectorAll('[data-q]').forEach(b => b.onclick = () => {
     body.querySelectorAll('.qbtn').forEach(x => x.classList.remove('active'));
     b.classList.add('active');
