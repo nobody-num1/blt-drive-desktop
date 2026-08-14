@@ -531,9 +531,19 @@ async function doDownload(id, name) {
 async function doOpenExternal(id, name) {
   try {
     clearError();
-    const r = await window.blt.diskOpenExternal(id, name);
+    const it = itemById(id);
+    const r = await window.blt.diskOpenExternal(id, name, it ? { mime: it.mime || '', parentId: it.parentId || null } : {});
     if (r && r.error) showError(r.error);
-    else if (r && r.ok) setTimeout(() => refresh(false), 600);
+    else if (r && r.ok) {
+      openModal('Ouvert dans une application', false);
+      $('modal-body').innerHTML = '<div class="muted">« ' + esc(name || 'fichier') + ' » a été ouvert avec le programme installé.</div>'
+        + '<div class="hint">✏️ Modifie le fichier puis <b>enregistre-le</b> (Ctrl+S) : il sera <b>réimporté automatiquement</b> dans le drive à ta place, et la copie temporaire sera supprimée. Tu peux fermer cette fenêtre.</div>';
+      const btn = document.createElement('button');
+      btn.className = 'btn primary';
+      btn.textContent = 'Fermer';
+      btn.onclick = closeModal;
+      $('modal-actions').appendChild(btn);
+    }
   } catch (e) { showError(e.message); }
 }
 
@@ -900,6 +910,17 @@ window.blt.onEvent(evt => {
   else if (evt.type === 'error') showError(evt.detail);
   else if (evt.type === 'update') handleUpdate(evt);
   else if (evt.type === 'account-connected') refresh(true);
+  else if (evt.type === 'reimport-start') setBadge('Réimport : ' + (evt.name || 'fichier') + '…', 'busy');
+  else if (evt.type === 'reimport-ok') {
+    setBadge('Connecté', 'ok');
+    if ($('conn-error').style.display === 'block') clearError();
+    const title = $('modal-title');
+    if (title && title.textContent && title.textContent.indexOf('Ouvert dans une application') === 0) {
+      $('modal-body').innerHTML = '<div class="muted">✓ <b>' + esc(evt.name || 'fichier') + '</b> a été modifié et <b>réimporté dans le drive</b>. La copie temporaire a été supprimée.</div>'
+        + '<div class="hint">La version mise à jour est maintenant sur le drive.</div>';
+    }
+    refresh(false);
+  }
 });
 
 $('btn-update-dl').onclick = async () => {

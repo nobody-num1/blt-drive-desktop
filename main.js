@@ -665,41 +665,107 @@ ipcMain.handle('disk-zip', async (e, id, defaultName) => {
 });
 
 const TEMP_OPEN_DIR = path.join(os.tmpdir(), 'blt-drive-open');
+let openEditsWatcher = null;
+const openEdits = new Map(); // target -> { target, id, name, mime, parentId, mtimeMs, size, lastSeen, busy }
 
 function cleanOpenDir() {
   try { fs.rmSync(TEMP_OPEN_DIR, { recursive: true, force: true }); } catch {}
 }
 
-function scheduleOpenCleanup(filePath) {
-  const maxAttempts = 10;
-  let attempt = 0;
-  const tryDelete = () => {
-    try {
-      fs.rmSync(filePath, { force: true });
-      dlog('open-external: fichier temp supprimé ' + filePath);
-    } catch {
-      attempt++;
-      if (attempt < maxAttempts) setTimeout(tryDelete, 3000);
+function startEditWatcher() {
+  if (openEditsWatcher) return;
+  openEditsWatcher = setInterval(async () => {
+    const now = Date.now();
+    for (const [target, e] of [...openEdits]) {
+      if (e.busy) continue;
+      try {
+        const st = fs.statSync(target);
+        const changed = st.mtimeMs !== e.mtimeMs || st.size !== e.size;
+        if (changed) {
+          // l'app externe écrit : on note l'état courant et on attend la stabilisation
+          e.lastSeen = { mtimeMs: st.mtimeMs, size: st.size };
+          e.stableSince = null;
+          e.dirty = true;
+          e.mtimeMs = st.mtimeMs;
+          e.size = st.size;
+          continue;
+        }
+        if (e.lastSeen && e.lastSeen.mtimeMs === st.mtimeMs && e.lastSeen.size === st.size) {
+          if (!e.stableSince) e.stableSince = now;
+          if (now - e.stableSince < 2500) continue;
+          e.lastSeen = null;
+          e.stableSince = null;
+          e.busy = true;
+          try { await reimportEdit(e); }
+          catch { }
+          finally { e.busy = false; }
+          continue;
+        }
+        // Modifications en attente de réimport (échec précédent) : nouvelle tentative
+        if (e.dirty && e.retryAt && now >= e.retryAt) {
+          e.retryAt = null;
+          e.busy = true;
+          try { await reimportEdit(e); }
+          catch { }
+          finally { e.busy = false; }
+          continue;
+        }
+        // Plus aucune modification : nettoyage après longue inactivité (édition terminée)
+        if (!e.dirty && now - e.mtimeMs > 10 * 60 * 1000) {
+          openEdits.delete(target);
+          try { fs.rmSync(target, { force: true }); dlog('open-external: temp supprimé après inactivité ' + target); } catch {}
+        }
+      } catch {
+        // fichier disparu (ex: app externe l'a déplacé/supprimé) : on abandonne la surveillance
+        openEdits.delete(target);
+        try { fs.rmSync(target, { force: true }); } catch {}
+      }
     }
-  };
-  setTimeout(tryDelete, 10000);
+  }, 1500);
 }
 
-ipcMain.handle('disk-open-external', async (e, id, name) => {
+async function reimportEdit(e) {
+  const a = buildApi();
+  if (!a) { e.retryAt = Date.now() + 30000; return; }
+  try {
+    const cfg = await a.config();
+    if (!cfg.key || !cfg.webhook) throw new Error('Clé ou webhook indisponible sur le serveur');
+    const size = fs.statSync(e.target).size;
+    dlog('open-external: réimport de « ' + e.name + ' » (' + size + ' o)…');
+    emit({ type: 'reimport-start', name: e.name });
+    await uploadFile(a, cfg.key, cfg.webhook, e.target, e.name, e.mime || 'application/octet-stream', e.parentId || null, null, '', e.id);
+    dlog('open-external: réimport OK id=' + e.id);
+    const st = fs.statSync(e.target);
+    e.mtimeMs = st.mtimeMs;
+    e.size = st.size;
+    e.dirty = false;
+    e.retryAt = null;
+    emit({ type: 'reimport-ok', id: e.id, name: e.name });
+  } catch (err) {
+    dlog('open-external: réimport échec ' + (err && err.message));
+    e.retryAt = Date.now() + 30000;
+    emit({ type: 'error', detail: 'Réimport de « ' + e.name + ' » échoué (nouvel essai dans 30 s) : ' + ((err && err.message) || String(err)) });
+  }
+}
+
+ipcMain.handle('disk-open-external', async (e, id, name, extra) => {
   const a = buildApi();
   if (!a) return { error: 'Non connecté' };
   try {
     const res = await a.download(id);
     if (!res.ok) return { error: 'Erreur téléchargement ' + res.status };
     const safe = (name || 'fichier').replace(/[\\/:*?"<>|]+/g, '_').slice(0, 120);
-    cleanOpenDir();
     fs.mkdirSync(TEMP_OPEN_DIR, { recursive: true });
     const target = path.join(TEMP_OPEN_DIR, safe);
     fs.writeFileSync(target, Buffer.from(await res.arrayBuffer()));
-    dlog('open-external: écrit ' + target + ' (' + fs.statSync(target).size + ' o), ouverture…');
+    const st = fs.statSync(target);
+    const mime = (extra && extra.mime) || 'application/octet-stream';
+    dlog('open-external: écrit ' + target + ' (' + st.size + ' o), ouverture…');
     const err = await shell.openPath(target);
     if (err) { dlog('open-external: shell.openPath error=' + err); return { error: err }; }
-    scheduleOpenCleanup(target);
+    const entry = { target, id, name, mime, parentId: (extra && extra.parentId) || null, mtimeMs: st.mtimeMs, size: st.size, lastSeen: null, stableSince: null, dirty: false, retryAt: null, busy: false };
+    openEdits.set(target, entry);
+    startEditWatcher();
     return { ok: true, path: target };
   } catch (err) { return { error: err.message }; }
 });
