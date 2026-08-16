@@ -23,7 +23,12 @@ contextBridge.exposeInMainWorld('blt', {
   diskDownload: (id, name) => ipcRenderer.invoke('disk-download', id, name),
   diskZip: (id, name) => ipcRenderer.invoke('disk-zip', id, name),
   diskOpenExternal: (id, name, extra) => ipcRenderer.invoke('disk-open-external', id, name, extra || {}),
-  previewUrl: id => 'bltdrive://preview/' + encodeURIComponent(id),
+  streamPort: () => { try { return ipcRenderer.sendSync('stream-port') || 0; } catch { return 0; } },
+  previewUrl: id => {
+    const p = ipcRenderer.sendSync('stream-port');
+    if (p) return 'http://127.0.0.1:' + p + '/preview/' + encodeURIComponent(id);
+    return 'bltdrive://preview/' + encodeURIComponent(id);
+  },
   getAppVersion: () => ipcRenderer.invoke('app-get-version'),
   checkUpdate: () => ipcRenderer.invoke('app-check-update'),
   downloadUpdate: () => ipcRenderer.invoke('app-download-update'),

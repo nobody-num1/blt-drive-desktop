@@ -348,12 +348,75 @@ async function importDrive(fileId, opts) {
   }
 }
 
+let localProxy = null;
+let localProxyPort = 0;
+
+// Proxy HTTP local : sert la preview en VRAI HTTP (range requests natives),
+// comme le site web. Le protocole custom bltdrive:// d'Electron ne relance pas
+// le streaming : le <video> ne faisait qu'une requête puis "ended" à ~50 s.
+function startLocalProxy() {
+  if (localProxy) return localProxyPort;
+  localProxy = http.createServer(async (req, res) => {
+    try {
+      const url = new URL(req.url, 'http://127.0.0.1');
+      const m = url.pathname.match(/^\/(preview|download)\/([^/]+)$/);
+      if (!m) { res.writeHead(400); res.end('Bad request'); return; }
+      const kind = m[1];
+      const id = decodeURIComponent(m[2]);
+      const a = buildApi();
+      if (!a) { res.writeHead(401); res.end('Non connecté'); return; }
+      const range = req.headers['range'] || '';
+      let upstream = null;
+      for (let attempt = 0; attempt < 4; attempt++) {
+        if (attempt) await new Promise(r => setTimeout(r, 250 * attempt));
+        try {
+          upstream = kind === 'preview' ? a.preview(id, range) : a.download(id, range);
+          upstream = await upstream;
+        } catch (ef) {
+          dlog('proxy fetch err [' + kind + ' ' + id + ']: ' + (ef && ef.message || ef) + ' range=' + range);
+          continue;
+        }
+        if (upstream.ok || (upstream.status !== 429 && upstream.status !== 503 && upstream.status !== 500)) break;
+      }
+      if (!upstream || !upstream.ok) { res.writeHead(upstream ? upstream.status : 500); res.end(upstream ? (upstream.statusText || ('Erreur ' + upstream.status)) : 'Erreur réseau'); return; }
+      const hdrs = {};
+      for (const k of ['content-type', 'content-length', 'content-range', 'accept-ranges', 'cache-control']) {
+        const v = upstream.headers.get(k);
+        if (v) hdrs[k] = v;
+      }
+      hdrs['Access-Control-Allow-Origin'] = '*';
+      hdrs['Access-Control-Allow-Headers'] = 'Range';
+      hdrs['Access-Control-Expose-Headers'] = 'Content-Range, Accept-Ranges, Content-Length';
+      res.writeHead(upstream.status, hdrs);
+      if (upstream.body) {
+        const reader = upstream.body.getReader();
+        while (true) {
+          const { done, value } = await reader.read();
+          if (done) break;
+          res.write(Buffer.from(value));
+        }
+      }
+      res.end();
+    } catch (e) {
+      try { res.writeHead(500); res.end((e && e.message) || 'Erreur streaming'); } catch {}
+    }
+  });
+  localProxy.on('error', () => {});
+  localProxy.listen(0, '127.0.0.1', () => {
+    localProxyPort = localProxy.address().port;
+    dlog('proxy local http://127.0.0.1:' + localProxyPort);
+  });
+  return localProxyPort;
+}
+
 function setupStreamProtocol() {
+  startLocalProxy();
   if (streamReady) return streamReady;
+  // Protocole custom conservé en secours (deep link / compat), mais previewUrl
+  // du renderer passe désormais par le proxy HTTP local pour un vrai streaming.
   streamReady = protocol.handle('bltdrive', async req => {
     try {
       const url = new URL(req.url);
-      // bltdrive://preview/<id>  ou  bltdrive://download/<id>
       const seg = url.hostname + url.pathname;
       const m = seg.match(/^(preview|download)\/([^/]+)$/);
       if (!m) return new Response('Bad request', { status: 400 });
@@ -361,8 +424,14 @@ function setupStreamProtocol() {
       const id = m[2];
       const a = buildApi();
       if (!a) return new Response('Non connecté', { status: 401 });
-      const upstream = kind === 'preview' ? a.preview(id, req.headers.get('range') || '') : a.download(id, req.headers.get('range') || '');
-      const res = await upstream;
+      const range = req.headers.get('range') || '';
+      let res = null;
+      for (let attempt = 0; attempt < 4; attempt++) {
+        if (attempt) await new Promise(r => setTimeout(r, 250 * attempt));
+        const upstream = kind === 'preview' ? a.preview(id, range) : a.download(id, range);
+        res = await upstream;
+        if (res.ok || (res.status !== 429 && res.status !== 503 && res.status !== 500)) break;
+      }
       if (!res.ok) return new Response(res.statusText || ('Erreur ' + res.status), { status: res.status });
       const hdrs = {};
       for (const k of ['content-type', 'content-length', 'content-range', 'accept-ranges', 'cache-control']) {
@@ -488,6 +557,10 @@ app.on('window-all-closed', () => { if (process.platform !== 'darwin') app.quit(
 app.on('will-quit', () => { cleanOpenDir(); });
 
 ipcMain.on('app-log', (e, m) => dlog('[renderer] ' + String(m || '').slice(0, 200)));
+
+ipcMain.on('stream-port', e => {
+  e.returnValue = localProxyPort;
+});
 
 ipcMain.handle('app-get-version', () => ({ version: app.getVersion(), updatable: autoUpdater.isUpdaterActive() }));
 
@@ -760,37 +833,23 @@ ipcMain.handle('disk-open-external', async (e, id, name, extra) => {
     fs.mkdirSync(TEMP_OPEN_DIR, { recursive: true });
     const target = path.join(TEMP_OPEN_DIR, safe);
     const total = (extra && extra.size) || 0;
-    const ws = fs.createWriteStream(target);
     let received = 0;
     let lastEmit = 0;
     let lastPct = -2;
-    const emitProg = () => {
+    const emitProg = (done) => {
       const pct = total ? Math.round(received / total * 100) : -1;
       const now = Date.now();
-      if (now - lastEmit < 200 && pct !== 100) return;
+      if (now - lastEmit < 200 && !done) return;
       lastEmit = now;
       if (pct === lastPct && pct !== 100) return;
       lastPct = pct;
       emit({ type: 'open-progress', id, name: name || 'fichier', pct, received, total });
     };
-    const RANGE_STEP = 16 * 1024 * 1024;
-    let start = 0;
-    let guard = 0;
-    while (true) {
-      if (total && received >= total) break;
-      const end = total ? Math.min(start + RANGE_STEP - 1, total - 1) : start + RANGE_STEP - 1;
-      const res = await a.download(id, 'bytes=' + start + '-' + end);
-      if (!res.ok) throw new Error('Erreur téléchargement ' + res.status);
-      const buf = Buffer.from(await res.arrayBuffer());
-      if (!buf.length) break;
-      if (!ws.write(buf)) await new Promise(r => ws.once('drain', r));
-      received += buf.length;
-      emitProg();
-      if (buf.length < RANGE_STEP) break;
-      start += RANGE_STEP;
-      if (++guard > 10000) throw new Error('Téléchargement interrompu (trop de blocs)');
-    }
-    await new Promise((ok, ko) => { ws.on('finish', ok); ws.on('error', ko); ws.end(); });
+    const cfg = await a.config();
+    if (!cfg.key) throw new Error('Clé de chiffrement indisponible sur le serveur');
+    const res = await downloadToFile(a, cfg.key, id, target, (recv) => { received = recv; emitProg(false); }, cfg.webhook);
+    received = res.size;
+    emitProg(true);
     const st = fs.statSync(target);
     const mime = (extra && extra.mime) || 'application/octet-stream';
     dlog('open-external: écrit ' + target + ' (' + st.size + ' o), ouverture…');
