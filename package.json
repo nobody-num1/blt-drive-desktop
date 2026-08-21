@@ -1,7 +1,7 @@
 {
   "name": "blt-drive-desktop",
-  "version": "0.7.0",
-  "description": "BLT Drive Desktop — v0.7.0 : refonte UI gaming BLT (aurora, glassmorphism, tokens néon), sidebar pleine hauteur, layout grille, scrollbar dégradée",
+  "version": "0.7.1",
+  "description": "BLT Drive Desktop — v0.7.1 : popup disclaimer perte de fichiers + refonte UI gaming BLT",
   "main": "main.js",
   "scripts": {
     "start": "electron .",
