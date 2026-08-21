@@ -6,81 +6,115 @@
   <title>BLT Drive Desktop</title>
   <link rel="stylesheet" href="style.css">
 </head>
-<body>
+<body class="explorer-body">
   <header class="top">
     <div class="brand">BLT Drive <span>Desktop</span></div>
     <div class="hdr-right">
       <span class="ver" id="app-version"></span>
-      <div class="conn" id="conn-badge">Non connecté</div>
+      <div class="conn" id="conn-badge"><span class="dot"></span><span class="conn-txt">Non connecté</span></div>
+      <button class="btn tiny ghost gear" id="btn-settings" title="Réglages">Réglages</button>
     </div>
   </header>
 
   <div class="update-banner" id="update-banner" style="display:none">
     <span class="msg" id="update-msg"></span>
     <div class="upd-track" id="update-track"><div class="upd-fill" id="update-fill"></div></div>
-    <button class="btn tiny" id="btn-update-dl" style="display:none">⬇ Télécharger</button>
-    <button class="btn tiny primary" id="btn-update-restart" style="display:none">🔄 Redémarrer et installer</button>
+    <button class="btn tiny" id="btn-update-dl" style="display:none">Télécharger</button>
+    <button class="btn tiny primary" id="btn-update-restart" style="display:none">Redémarrer et installer</button>
     <button class="btn tiny ghost" id="btn-update-dismiss" style="display:none">✕</button>
   </div>
 
-  <div class="layout">
-    <section class="panel settings">
-      <h2>Connexion</h2>
-      <label>URL du drive
-        <input type="text" id="in-origin" placeholder="https://blt-drive.nobodylem0.workers.dev">
-      </label>
-      <div class="row">
-        <button class="btn" id="btn-connect">🔑 Se connecter</button>
-        <button class="btn ghost" id="btn-add">➕ Ajouter un compte</button>
-      </div>
-      <div id="account-list" class="account-list"></div>
-      <div class="row" style="margin-top:8px">
-        <button class="btn ghost" id="btn-test">Tester</button>
-      </div>
-      <div class="hint" id="conn-info"></div>
-      <div class="hint warn" id="conn-error" style="display:none"></div>
+  <nav class="commandbar">
+    <div class="nav-arrows">
+      <button class="btn tiny ghost" id="btn-back" title="Retour (Alt+Flèche gauche)" disabled>←</button>
+      <button class="btn tiny ghost" id="btn-forward" title="Suivant (Alt+Flèche droite)" disabled>→</button>
+      <button class="btn tiny ghost" id="btn-up" title="Dossier parent (Alt+Flèche haut)" disabled>↑</button>
+    </div>
+    <div class="address" id="address" title="Chemin du dossier"></div>
+    <div class="cmd-actions">
+      <button class="btn tiny ghost" id="btn-refresh" title="Actualiser (F5)">⟳</button>
+      <button class="btn tiny" id="btn-new-folder">Nouveau dossier</button>
+      <button class="btn tiny" id="btn-move">Déplacer</button>
+      <button class="btn tiny" id="btn-pick">Importer</button>
+    </div>
+  </nav>
 
-      <div id="import-options" style="display:none">
-        <h2 style="margin-top:22px">Options d'import</h2>
-        <label class="check"><input type="checkbox" id="opt-720" checked> Générer la version 720p</label>
-        <label class="check"><input type="checkbox" id="opt-480" checked> Générer la version 480p</label>
-        <label class="check"><input type="checkbox" id="opt-360" checked> Générer la version 360p</label>
-        <label class="check"><input type="checkbox" id="opt-orig" checked> Uploader aussi l'original</label>
-        <label class="check"><input type="checkbox" id="opt-tracks" checked> Générer une version par piste audio + sous-titres</label>
-        <label>CRF (qualité x264, 23 = défaut)
-          <input type="number" id="opt-crf" min="18" max="32" value="23">
-        </label>
-      </div>
-      <div class="hint" id="import-locked">Connecte-toi à un compte Discord pour importer et transcoder — c'est ouvert à tous les membres connectés.</div>
-    </section>
+  <div class="layout explorer">
+    <aside class="sidebar">
+      <div class="tree" id="tree"></div>
+    </aside>
 
     <main class="content">
-      <section class="panel">
-        <h2>Importer depuis le disque</h2>
-        <p class="muted">Sélectionne des vidéos : l'application transcode en local (ffmpeg) puis uploade l'original et les renditions 720/480/360p.</p>
-        <div class="row">
-          <button class="btn primary" id="btn-pick">📂 Choisir des vidéos</button>
-          <button class="btn ghost" id="btn-import">🚀 Lancer l'import</button>
+      <section class="panel p-explorer">
+        <div class="toolbar">
+          <span id="folder-title" class="folder-title">Mon Drive</span>
+          <span class="spacer"></span>
+          <span class="hint" id="conn-info"></span>
+          <span class="hint warn" id="conn-error" style="display:none"></span>
         </div>
-        <div id="file-list" class="file-list"></div>
+        <div class="listhead" id="listhead">
+          <div class="col c-name" data-sort="name">Nom</div>
+          <div class="col c-size" data-sort="size">Taille</div>
+          <div class="col c-type" data-sort="type">Type</div>
+          <div class="col c-date" data-sort="date">Modifié</div>
+        </div>
+        <div class="list" id="list"></div>
+        <div class="muted empty" id="list-empty" style="display:none"></div>
       </section>
 
-      <section class="panel">
-        <h2>Récupérer depuis le drive</h2>
-        <p class="muted">Télécharge un original déjà uploadé, génère les renditions et les relie à celui-ci.</p>
-        <div class="row">
-          <button class="btn primary" id="btn-refresh-drive">🔄 Lister les vidéos</button>
-        </div>
-        <div id="drive-list" class="drive-list"></div>
-      </section>
-
-      <section class="panel">
-        <h2>Tâches</h2>
+      <section class="panel p-jobs">
+        <h2>Tâches <span class="job-count" id="job-count"></span></h2>
         <div id="jobs" class="jobs">
           <div class="job-empty">Aucune tâche</div>
         </div>
       </section>
     </main>
+  </div>
+
+  <footer class="statusbar">
+    <span id="status-count"></span>
+    <span class="spacer"></span>
+    <span id="status-quota"></span>
+  </footer>
+
+  <!-- Panneau Réglages -->
+  <div class="drawer" id="settings-drawer" style="display:none">
+    <div class="drawer-head">Réglages <button class="btn tiny ghost" id="btn-settings-close">✕</button></div>
+    <div class="drawer-body">
+      <section class="panel">
+        <h2>Connexion</h2>
+        <label>URL du drive
+          <input type="text" id="in-origin" placeholder="https://blt-drive.nobodylem0.workers.dev">
+        </label>
+        <div class="row">
+          <button class="btn" id="btn-connect">Se connecter</button>
+          <button class="btn ghost" id="btn-add">Ajouter un compte</button>
+          <button class="btn ghost" id="btn-test">Tester</button>
+        </div>
+        <div id="account-list" class="account-list"></div>
+      </section>
+      <section class="panel">
+        <h2>Options d'import</h2>
+        <label class="check"><input type="checkbox" id="opt-720" checked> Générer la version 720p</label>
+        <label class="check"><input type="checkbox" id="opt-480" checked> Générer la version 480p</label>
+        <label class="check"><input type="checkbox" id="opt-360" checked> Générer la version 360p</label>
+        <label class="check"><input type="checkbox" id="opt-orig" checked> Uploader aussi l'original</label>
+        <label class="check"><input type="checkbox" id="opt-tracks" checked> Une version par piste audio + sous-titres</label>
+        <label>CRF (qualité x264, 23 = défaut)
+          <input type="number" id="opt-crf" min="18" max="32" value="23">
+        </label>
+        <div class="hint" id="import-locked">Connecte-toi à un compte Discord pour importer et transcoder — c'est ouvert à tous les membres connectés.</div>
+      </section>
+    </div>
+  </div>
+
+  <!-- Modale générique -->
+  <div class="modal-overlay" id="modal-overlay" style="display:none">
+    <div class="modal" id="modal">
+      <div class="modal-head"><span id="modal-title"></span><button class="btn tiny ghost" id="modal-close">✕</button></div>
+      <div class="modal-body" id="modal-body"></div>
+      <div class="modal-actions" id="modal-actions"></div>
+    </div>
   </div>
 
   <script src="renderer.js"></script>

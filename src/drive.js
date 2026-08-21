@@ -43,6 +43,28 @@ class DriveApi {
   chunks(id) { return this.request('/api/disk/chunks/' + id); }
   complete(body) { return this.request('/api/disk/complete', { method: 'POST', body }); }
   mkdir(name, parentId) { return this.request('/api/disk/mkdir', { method: 'POST', body: { name, parentId } }); }
+  rename(id, name) { return this.request('/api/disk/rename/' + id, { method: 'POST', body: { name } }); }
+  move(id, parentId) { return this.request('/api/disk/move/' + id, { method: 'POST', body: { parentId } }); }
+  del(id) { return this.request('/api/disk/delete/' + id, { method: 'DELETE' }); }
+  shares() { return this.request('/api/disk/shares'); }
+  sharedWithMe() { return this.request('/api/disk/shared-with-me'); }
+  createShare(body) { return this.request('/api/disk/shares', { method: 'POST', body }); }
+  deleteShare(id) { return this.request('/api/disk/shares/' + id, { method: 'DELETE' }); }
+  zip(id) { return this.request('/api/disk/zip/' + id); }
+  download(id, range) {
+    const headers = { 'X-Requested-With': 'blt-drive-desktop' };
+    if (this.cookie) headers['Cookie'] = 'drive_sid=' + this.cookie;
+    else if (this.credential) headers['Authorization'] = 'Bearer ' + this.credential;
+    if (range) headers['Range'] = range;
+    return fetch(this.origin + '/api/disk/download/' + id, { method: 'GET', headers });
+  }
+  preview(id, range) {
+    const headers = { 'X-Requested-With': 'blt-drive-desktop' };
+    if (this.cookie) headers['Cookie'] = 'drive_sid=' + this.cookie;
+    else if (this.credential) headers['Authorization'] = 'Bearer ' + this.credential;
+    if (range) headers['Range'] = range;
+    return fetch(this.origin + '/api/disk/preview/' + id, { method: 'GET', headers });
+  }
 }
 
 module.exports = { DriveApi };

@@ -12,7 +12,7 @@ function probeDuration(ffmpeg, inputPath) {
     p.on('error', reject);
     p.on('close', () => {
       const m = err.match(/Duration:\s*(\d+):(\d+):(\d+(?:\.\d+)?)/);
-      if (m) resolve(parseInt(m[1], 10) * 3600 + parseInt(m[2], 10) * 60 + parseFloat(m[3]));
+      if (m) resolve((parseInt(m[1], 10) * 3600 + parseInt(m[2], 10) * 60 + parseFloat(m[3])) * 1000);
       else resolve(0);
     });
   });
@@ -39,7 +39,8 @@ function transcode(ffmpeg, inputPath, outputPath, height, crf, onProgress, audio
     try { p = spawn(ffmpeg, args, { windowsHide: true }); }
     catch (e) { return reject(e); }
     let buf = '';
-    let lastRestartAt = Date.now();
+    let lastReportAt = 0;
+    let ended = false;
     p.stderr.on('data', d => {
       buf += d.toString();
       let idx;
@@ -47,19 +48,22 @@ function transcode(ffmpeg, inputPath, outputPath, height, crf, onProgress, audio
         const line = buf.slice(0, idx).trim();
         buf = buf.slice(idx + 1);
         if (!onProgress) continue;
+        if (line === 'progress=end') { ended = true; onProgress(-1); continue; }
         let ms = null;
-        let m = line.match(/^out_time_ms=(\d+)/);
-        if (m) ms = parseInt(m[1], 10);
-        else { m = line.match(/^out_time_us=(\d+)/); if (m) ms = parseInt(m[1], 10) / 1000; }
+        // NB : out_time_ms/out_time_us sont en MICROsecondes (quirk ffmpeg)
+        let m = line.match(/^out_time_us=(\d+)/);
+        if (m) ms = parseInt(m[1], 10) / 1000;
+        else { m = line.match(/^out_time_ms=(\d+)/); if (m) ms = parseInt(m[1], 10) / 1000; }
         if (ms === null) continue;
         const now = Date.now();
-        if (now - lastRestartAt < 300) continue;
-        lastRestartAt = now;
+        if (now - lastReportAt < 200) continue;
+        lastReportAt = now;
         onProgress(ms);
       }
     });
     p.on('error', reject);
     p.on('close', code => {
+      if (!ended && code === 0 && onProgress) onProgress(-1);
       if (code === 0) resolve(outputPath);
       else reject(new Error('ffmpeg a échoué (code ' + code + ')'));
     });
@@ -79,12 +83,28 @@ function probeStreams(ffmpeg, inputPath) {
       if (!err) return resolve({ audio: [], subtitles: [] });
       const audio = [];
       const subtitles = [];
-      const lines = err.split('\n');
+      const lines = err.split(/\r?\n/);
+      let cur = null;
       for (const line of lines) {
-        const am = line.match(/^\s*Stream\s+#0:(\d+)(?:\([^)]*\))?:\s*Audio:\s*(\S+)/);
-        if (am) audio.push({ index: parseInt(am[1], 10), codec: am[2], line });
-        const sm = line.match(/^\s*Stream\s+#0:(\d+)(?:\([^)]*\))?:\s*Subtitle:\s*(\S+)/);
-        if (sm) subtitles.push({ index: parseInt(sm[1], 10), codec: sm[2], line });
+        const am = line.match(/^\s*Stream\s+#0:(\d+)(?:\(([^)]*)\))?:\s*Audio:\s*(\S+)/);
+        if (am) {
+          cur = { index: parseInt(am[1], 10), codec: am[3], language: (am[2] || '').trim(), title: '', line };
+          audio.push(cur);
+          continue;
+        }
+        const sm = line.match(/^\s*Stream\s+#0:(\d+)(?:\(([^)]*)\))?:\s*Subtitle:\s*(\S+)/);
+        if (sm) {
+          cur = { index: parseInt(sm[1], 10), codec: sm[3], language: (sm[2] || '').trim(), title: '', line };
+          subtitles.push(cur);
+          continue;
+        }
+        if (cur) {
+          const tm = line.match(/^\s+title\s*:\s*(.+)$/i);
+          if (tm) { cur.title = tm[1].trim(); continue; }
+          const lm = line.match(/^\s+language\s*:\s*(.+)$/i);
+          if (lm && !cur.language) cur.language = lm[1].trim();
+          if (/^\s+Duration:/.test(line) || /^\s*Stream\s+#/.test(line)) cur = null;
+        }
       }
       resolve({ audio, subtitles });
     });
@@ -114,7 +134,7 @@ async function extractAudioTracks(ffmpeg, inputPath, outDir, baseName) {
       p.on('close', code => { if (code === 0) resolve(); else reject(new Error('ffmpeg audio-' + trackNum + ' code ' + code)); });
     });
     const sz = fs.statSync(outPath).size;
-    if (sz > 0) tracks.push({ trackNum, path: outPath, name: outName, size: sz });
+    if (sz > 0) tracks.push({ trackNum, path: outPath, name: outName, size: sz, label: (audio[i] && (audio[i].title || audio[i].language)) || '' });
   }
   return tracks;
 }
@@ -142,7 +162,7 @@ async function extractSubtitles(ffmpeg, inputPath, outDir, baseName) {
         p.on('close', code => { if (code === 0) resolve(); else reject(new Error('ffmpeg sub-' + subNum + ' code ' + code)); });
       });
       const sz = fs.statSync(outPath).size;
-      if (sz > 0) tracks.push({ subNum, path: outPath, name: outName, size: sz });
+      if (sz > 0) tracks.push({ subNum, path: outPath, name: outName, size: sz, label: (subtitles[i] && (subtitles[i].title || subtitles[i].language)) || '' });
     } catch (e) { console.warn('Sous-titre #' + subNum + ' extraction échouée :', e.message); }
   }
   return tracks;

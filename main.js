@@ -2,8 +2,12 @@ const fs = require('fs');
 const os = require('os');
 const path = require('path');
 const http = require('http');
-const { app, BrowserWindow, ipcMain, dialog, shell } = require('electron');
+const { app, BrowserWindow, ipcMain, dialog, shell, screen, protocol } = require('electron');
 const { autoUpdater } = require('electron-updater');
+
+protocol.registerSchemesAsPrivileged([
+  { scheme: 'bltdrive', privileges: { standard: true, secure: true, supportFetchAPI: true, stream: true } }
+]);
 
 const ffmpegPath = resolveFfmpeg();
 const { DriveApi } = require('./src/drive');
@@ -22,6 +26,7 @@ let settings = { origin: '', accounts: [], activeAccountId: '' };
 let api = null;
 let pendingDeepLink = null;
 let loginOnShow = null;
+let streamReady = null;
 
 function dlog(msg) {
   try {
@@ -219,8 +224,8 @@ function cleanDir(dir) {
   fs.rmSync(dir, { recursive: true, force: true });
 }
 
-async function runUpload(api, key, webhook, filePath, name, mime, parentId, onChunk) {
-  const res = await uploadFile(api, key, webhook, filePath, name, mime, parentId, onChunk);
+async function runUpload(api, key, webhook, filePath, name, mime, parentId, onChunk, label) {
+  const res = await uploadFile(api, key, webhook, filePath, name, mime, parentId, onChunk, label);
   return res;
 }
 
@@ -238,10 +243,18 @@ async function importLocal(videos, opts) {
     try {
       const origName = baseName(path.basename(v));
       const mime = mimeFor(origName);
+      const isVideo = isVideoPath(v) || mime.startsWith('video/');
+      if (!isVideo) {
+        emit({ type: 'phase', job: j, phase: 'upload', detail: 'Upload du fichier', pct: 0 });
+        await runUpload(api, cfg.key, cfg.webhook, v, origName, mime, opts.parentId || null,
+          (c, t) => emit({ type: 'phase', job: j, phase: 'upload', detail: 'Fichier — ' + fmtBar(c) + '/' + fmtBar(t), pct: t ? Math.round(c / t * 100) : 0 }));
+        emit({ type: 'job-end', job: j, ok: true });
+        continue;
+      }
       if (opts.includeOriginal !== false) {
         emit({ type: 'phase', job: j, phase: 'upload', detail: 'Upload de l\'original', pct: 0 });
         await runUpload(api, cfg.key, cfg.webhook, v, origName, mime, opts.parentId || null,
-          (c, t) => emit({ type: 'phase', job: j, phase: 'upload', detail: 'Original — blocs ' + c + '/' + t, pct: t ? Math.round(c / t * 100) : 0 }));
+          (c, t) => emit({ type: 'phase', job: j, phase: 'upload', detail: 'Original — ' + fmtBar(c) + '/' + fmtBar(t), pct: t ? Math.round(c / t * 100) : 0 }));
       }
       const totalMs = await probeDuration(ffmpegPath, v);
       const streams = await probeStreams(ffmpegPath, v);
@@ -250,28 +263,29 @@ async function importLocal(videos, opts) {
       const subtitleTracks = includeTracks ? await extractSubtitles(ffmpegPath, v, tmp, baseNameNoExt) : [];
       // Uploader sous-titres
       for (const st of subtitleTracks) {
-        emit({ type: 'phase', job: j, phase: 'upload', detail: 'Upload sous-titre ' + st.subNum, pct: 0 });
+        emit({ type: 'phase', job: j, phase: 'upload', detail: 'Upload sous-titre ' + (st.label || st.subNum), pct: 0 });
         await runUpload(api, cfg.key, cfg.webhook, st.path, st.name, 'text/vtt', opts.parentId || null,
-          (c, t) => emit({ type: 'phase', job: j, phase: 'upload', detail: 'Sub ' + st.subNum + ' — blocs ' + c + '/' + t, pct: t ? Math.round(c / t * 100) : 0 }));
+          (c, t) => emit({ type: 'phase', job: j, phase: 'upload', detail: 'Sub ' + (st.label || st.subNum) + ' — ' + fmtBar(c) + '/' + fmtBar(t), pct: t ? Math.round(c / t * 100) : 0 }),
+          st.label);
       }
       for (const q of qualities) {
         for (let a = 0; a < audioCount; a++) {
+          const audioLabel = (streams.audio[a] && (streams.audio[a].title || streams.audio[a].language)) || '';
           const trackName = a === 0 ? qualityName(origName, q) : trackQualityName(origName, q, a + 1);
           const out = path.join(tmp, trackName);
           emit({ type: 'phase', job: j, phase: 'transcode', detail: 'Transcription ' + q + 'p' + (a > 0 ? ' — piste audio ' + (a + 1) : ''), pct: null });
           await transcode(ffmpegPath, v, out, q, opts.crf || 23, ms => {
-            if (totalMs && totalMs > 0) {
-              const pct = Math.min(99, Math.round((ms / totalMs) * 100));
-              emit({ type: 'phase', job: j, phase: 'transcode', detail: 'Transcription ' + q + 'p' + (a > 0 ? ' — piste audio ' + (a + 1) : ''), pct });
-            } else {
-              emit({ type: 'phase', job: j, phase: 'transcode', detail: 'Transcription ' + q + 'p' + (a > 0 ? ' — piste audio ' + (a + 1) : ''), pct: null });
-            }
+            const detail = 'Transcription ' + q + 'p' + (a > 0 ? ' — piste audio ' + (a + 1) : '');
+            if (ms === -1) emit({ type: 'phase', job: j, phase: 'transcode', detail, pct: 100 });
+            else if (totalMs && totalMs > 0) emit({ type: 'phase', job: j, phase: 'transcode', detail, pct: Math.min(100, Math.round((ms / totalMs) * 100)) });
+            else emit({ type: 'phase', job: j, phase: 'transcode', detail, pct: null });
           }, a === 0 && !streams.audio.length ? undefined : a);
           const outBytes = fs.statSync(out).size;
           assertSpace(cfg, outBytes);
           emit({ type: 'phase', job: j, phase: 'upload', detail: 'Upload ' + q + 'p' + (a > 0 ? ' — piste audio ' + (a + 1) : ''), pct: 0 });
           await runUpload(api, cfg.key, cfg.webhook, out, trackName, 'video/mp4', opts.parentId || null,
-            (c, t) => emit({ type: 'phase', job: j, phase: 'upload', detail: q + 'p' + (a > 0 ? ' (piste ' + (a + 1) + ')' : '') + ' — blocs ' + c + '/' + t, pct: t ? Math.round(c / t * 100) : 0 }));
+            (c, t) => emit({ type: 'phase', job: j, phase: 'upload', detail: q + 'p' + (a > 0 ? ' (piste ' + (a + 1) + ')' : '') + ' — ' + fmtBar(c) + '/' + fmtBar(t), pct: t ? Math.round(c / t * 100) : 0 }),
+            audioLabel);
         }
       }
       emit({ type: 'job-end', job: j, ok: true });
@@ -297,7 +311,7 @@ async function importDrive(fileId, opts) {
   try {
     const local = path.join(tmp, baseName(item.name));
     emit({ type: 'phase', job: j, phase: 'download', detail: 'Récupération de l\'original', pct: 0 });
-    await downloadToFile(api, cfg.key, fileId, local, (c, t) => emit({ type: 'phase', job: j, phase: 'download', detail: 'Récupération ' + c + '/' + t, pct: t ? Math.round(c / t * 100) : 0 }));
+    await downloadToFile(api, cfg.key, fileId, local, (c, t) => emit({ type: 'phase', job: j, phase: 'download', detail: 'Récupération ' + fmtBar(c) + '/' + fmtBar(t), pct: t ? Math.round(c / t * 100) : 0 }));
     const totalMs = await probeDuration(ffmpegPath, local);
     const qualities = (opts.qualities || [720, 480, 360]).sort((a, b) => a - b);
     const includeTracks = opts.includeTracks !== false;
@@ -307,28 +321,29 @@ async function importDrive(fileId, opts) {
     const subtitleTracks = includeTracks ? await extractSubtitles(ffmpegPath, local, tmp, baseNameNoExt) : [];
     // Uploader sous-titres
     for (const st of subtitleTracks) {
-      emit({ type: 'phase', job: j, phase: 'upload', detail: 'Upload sous-titre ' + st.subNum, pct: 0 });
+      emit({ type: 'phase', job: j, phase: 'upload', detail: 'Upload sous-titre ' + (st.label || st.subNum), pct: 0 });
       await runUpload(api, cfg.key, cfg.webhook, st.path, st.name, 'text/vtt', item.parentId || null,
-        (c, t) => emit({ type: 'phase', job: j, phase: 'upload', detail: 'Sub ' + st.subNum + ' — blocs ' + c + '/' + t, pct: t ? Math.round(c / t * 100) : 0 }));
+        (c, t) => emit({ type: 'phase', job: j, phase: 'upload', detail: 'Sub ' + (st.label || st.subNum) + ' — ' + fmtBar(c) + '/' + fmtBar(t), pct: t ? Math.round(c / t * 100) : 0 }),
+        st.label);
     }
     for (const q of qualities) {
       for (let a = 0; a < audioCount; a++) {
+        const audioLabel = (streams.audio[a] && (streams.audio[a].title || streams.audio[a].language)) || '';
         const trackName = a === 0 ? qualityName(item.name, q) : trackQualityName(item.name, q, a + 1);
         const out = path.join(tmp, trackName);
         emit({ type: 'phase', job: j, phase: 'transcode', detail: 'Transcription ' + q + 'p' + (a > 0 ? ' — piste audio ' + (a + 1) : ''), pct: null });
         await transcode(ffmpegPath, local, out, q, opts.crf || 23, ms => {
-          if (totalMs && totalMs > 0) {
-            const pct = Math.min(99, Math.round((ms / totalMs) * 100));
-            emit({ type: 'phase', job: j, phase: 'transcode', detail: 'Transcription ' + q + 'p' + (a > 0 ? ' — piste audio ' + (a + 1) : ''), pct });
-          } else {
-            emit({ type: 'phase', job: j, phase: 'transcode', detail: 'Transcription ' + q + 'p' + (a > 0 ? ' — piste audio ' + (a + 1) : ''), pct: null });
-          }
+          const detail = 'Transcription ' + q + 'p' + (a > 0 ? ' — piste audio ' + (a + 1) : '');
+          if (ms === -1) emit({ type: 'phase', job: j, phase: 'transcode', detail, pct: 100 });
+          else if (totalMs && totalMs > 0) emit({ type: 'phase', job: j, phase: 'transcode', detail, pct: Math.min(100, Math.round((ms / totalMs) * 100)) });
+          else emit({ type: 'phase', job: j, phase: 'transcode', detail, pct: null });
         }, a > 0 ? a : undefined);
         const outBytes = fs.statSync(out).size;
         assertSpace(cfg, outBytes);
         emit({ type: 'phase', job: j, phase: 'upload', detail: 'Upload ' + q + 'p' + (a > 0 ? ' — piste audio ' + (a + 1) : ''), pct: 0 });
         await runUpload(api, cfg.key, cfg.webhook, out, trackName, 'video/mp4', item.parentId || null,
-          (c, t) => emit({ type: 'phase', job: j, phase: 'upload', detail: q + 'p' + (a > 0 ? ' (piste ' + (a + 1) + ')' : '') + ' — blocs ' + c + '/' + t, pct: t ? Math.round(c / t * 100) : 0 }));
+          (c, t) => emit({ type: 'phase', job: j, phase: 'upload', detail: q + 'p' + (a > 0 ? ' (piste ' + (a + 1) + ')' : '') + ' — ' + fmtBar(c) + '/' + fmtBar(t), pct: t ? Math.round(c / t * 100) : 0 }),
+          audioLabel);
       }
     }
     emit({ type: 'job-end', job: j, ok: true });
@@ -341,17 +356,156 @@ async function importDrive(fileId, opts) {
   }
 }
 
+let localProxy = null;
+let localProxyPort = 0;
+
+// Proxy HTTP local : sert la preview en VRAI HTTP (range requests natives),
+// comme le site web. Le protocole custom bltdrive:// d'Electron ne relance pas
+// le streaming : le <video> ne faisait qu'une requête puis "ended" à ~50 s.
+function startLocalProxy() {
+  if (localProxy) return localProxyPort;
+  localProxy = http.createServer(async (req, res) => {
+    try {
+      const url = new URL(req.url, 'http://127.0.0.1');
+      const m = url.pathname.match(/^\/(preview|download)\/([^/]+)$/);
+      if (!m) { res.writeHead(400); res.end('Bad request'); return; }
+      const kind = m[1];
+      const id = decodeURIComponent(m[2]);
+      const a = buildApi();
+      if (!a) { res.writeHead(401); res.end('Non connecté'); return; }
+      const range = req.headers['range'] || '';
+      let upstream = null;
+      for (let attempt = 0; attempt < 4; attempt++) {
+        if (attempt) await new Promise(r => setTimeout(r, 250 * attempt));
+        try {
+          upstream = kind === 'preview' ? a.preview(id, range) : a.download(id, range);
+          upstream = await upstream;
+        } catch (ef) {
+          dlog('proxy fetch err [' + kind + ' ' + id + ']: ' + (ef && ef.message || ef) + ' range=' + range);
+          continue;
+        }
+        if (upstream.ok || (upstream.status !== 429 && upstream.status !== 503 && upstream.status !== 500)) break;
+      }
+      if (!upstream || !upstream.ok) { res.writeHead(upstream ? upstream.status : 500); res.end(upstream ? (upstream.statusText || ('Erreur ' + upstream.status)) : 'Erreur réseau'); return; }
+      const hdrs = {};
+      for (const k of ['content-type', 'content-length', 'content-range', 'accept-ranges', 'cache-control']) {
+        const v = upstream.headers.get(k);
+        if (v) hdrs[k] = v;
+      }
+      hdrs['Access-Control-Allow-Origin'] = '*';
+      hdrs['Access-Control-Allow-Headers'] = 'Range';
+      hdrs['Access-Control-Expose-Headers'] = 'Content-Range, Accept-Ranges, Content-Length';
+      res.writeHead(upstream.status, hdrs);
+      if (upstream.body) {
+        const reader = upstream.body.getReader();
+        while (true) {
+          const { done, value } = await reader.read();
+          if (done) break;
+          res.write(Buffer.from(value));
+        }
+      }
+      res.end();
+    } catch (e) {
+      try { res.writeHead(500); res.end((e && e.message) || 'Erreur streaming'); } catch {}
+    }
+  });
+  localProxy.on('error', () => {});
+  localProxy.listen(0, '127.0.0.1', () => {
+    localProxyPort = localProxy.address().port;
+    dlog('proxy local http://127.0.0.1:' + localProxyPort);
+  });
+  return localProxyPort;
+}
+
+function setupStreamProtocol() {
+  startLocalProxy();
+  if (streamReady) return streamReady;
+  // Protocole custom conservé en secours (deep link / compat), mais previewUrl
+  // du renderer passe désormais par le proxy HTTP local pour un vrai streaming.
+  streamReady = protocol.handle('bltdrive', async req => {
+    try {
+      const url = new URL(req.url);
+      const seg = url.hostname + url.pathname;
+      const m = seg.match(/^(preview|download)\/([^/]+)$/);
+      if (!m) return new Response('Bad request', { status: 400 });
+      const kind = m[1];
+      const id = m[2];
+      const a = buildApi();
+      if (!a) return new Response('Non connecté', { status: 401 });
+      const range = req.headers.get('range') || '';
+      let res = null;
+      for (let attempt = 0; attempt < 4; attempt++) {
+        if (attempt) await new Promise(r => setTimeout(r, 250 * attempt));
+        const upstream = kind === 'preview' ? a.preview(id, range) : a.download(id, range);
+        res = await upstream;
+        if (res.ok || (res.status !== 429 && res.status !== 503 && res.status !== 500)) break;
+      }
+      if (!res.ok) return new Response(res.statusText || ('Erreur ' + res.status), { status: res.status });
+      const hdrs = {};
+      for (const k of ['content-type', 'content-length', 'content-range', 'accept-ranges', 'cache-control']) {
+        const v = res.headers.get(k);
+        if (v) hdrs[k] = v;
+      }
+      return new Response(res.body, { status: res.status, headers: hdrs });
+    } catch (e) {
+      return new Response((e && e.message) || 'Erreur streaming', { status: 500 });
+    }
+  });
+  return streamReady;
+}
+
 function createWindow() {
-  win = new BrowserWindow({
-    width: 1080,
-    height: 760,
+  const bounds = savedWindowBounds();
+  const defaults = { width: 1080, height: 760 };
+  let hasPos = false;
+  let posX, posY;
+  if (bounds && typeof bounds.x === 'number' && typeof bounds.y === 'number') {
+    const disp = screen.getAllDisplays().find(d => {
+      const wa = d.workArea;
+      return bounds.x >= wa.x - 10 && bounds.x < wa.x + wa.width - 60 && bounds.y >= wa.y - 10 && bounds.y < wa.y + wa.height - 40;
+    });
+    if (disp) { hasPos = true; posX = bounds.x; posY = bounds.y; }
+  }
+  const opts = {
+    width: bounds ? bounds.width : defaults.width,
+    height: bounds ? bounds.height : defaults.height,
     minWidth: 720,
     minHeight: 520,
     backgroundColor: '#040323',
     title: 'BLT Drive Desktop',
     webPreferences: { preload: path.join(__dirname, 'preload.js'), contextIsolation: true, nodeIntegration: false }
-  });
+  };
+  if (hasPos) { opts.x = posX; opts.y = posY; }
+  win = new BrowserWindow(opts);
   win.loadFile(path.join(__dirname, 'renderer', 'index.html'));
+  let saveTimer = null;
+  const persist = () => {
+    if (win.isMaximized() || win.isMinimized() || win.isFullScreen()) return;
+    if (saveTimer) clearTimeout(saveTimer);
+    saveTimer = setTimeout(() => {
+      try {
+        settings.winBounds = win.getBounds();
+        saveSettings();
+      } catch {}
+    }, 300);
+  };
+  win.on('resize', persist);
+  win.on('move', persist);
+  win.on('close', () => {
+    if (win.isMaximized() || win.isMinimized() || win.isFullScreen()) return;
+    try { settings.winBounds = win.getBounds(); saveSettings(); } catch {}
+  });
+}
+
+function savedWindowBounds() {
+  try {
+    const b = settings && settings.winBounds;
+    if (!b || typeof b.width !== 'number' || typeof b.height !== 'number') return null;
+    const wa = screen.getPrimaryDisplay().workArea;
+    const w = Math.max(720, Math.min(b.width, wa.width));
+    const h = Math.max(520, Math.min(b.height, wa.height));
+    return { width: w, height: h, x: b.x, y: b.y };
+  } catch { return null; }
 }
 
 function setupAutoUpdater() {
@@ -382,6 +536,7 @@ if (!gotLock) {
   app.whenReady().then(async () => {
     registerProtocol();
     loadSettings();
+    cleanOpenDir();
     try { await startCallbackServer(); } catch {}
     // Deep link reçu au démarrage (avant origin) : on l'applique dès que l'origin est connue
     const startup = process.argv.find(a => a.startsWith('bltdrive://'));
@@ -393,6 +548,7 @@ if (!gotLock) {
       }
     }
     createWindow();
+    setupStreamProtocol();
     if (loginOnShow) {
       const d = loginOnShow; loginOnShow = null;
       win.webContents.once('did-finish-load', () => applyLogin(d));
@@ -406,7 +562,13 @@ if (!gotLock) {
 
 app.on('window-all-closed', () => { if (process.platform !== 'darwin') app.quit(); });
 
+app.on('will-quit', () => { cleanOpenDir(); });
+
 ipcMain.on('app-log', (e, m) => dlog('[renderer] ' + String(m || '').slice(0, 200)));
+
+ipcMain.on('stream-port', e => {
+  e.returnValue = localProxyPort;
+});
 
 ipcMain.handle('app-get-version', () => ({ version: app.getVersion(), updatable: autoUpdater.isUpdaterActive() }));
 
@@ -474,12 +636,12 @@ ipcMain.handle('test-connection', async () => {
   } catch (e) { dlog('test-connection: ERROR ' + e.message); return { ok: false, error: e.message }; }
 });
 
-ipcMain.handle('pick-videos', async () => {
+ipcMain.handle('pick-files', async () => {
   const r = await dialog.showOpenDialog(win, {
     properties: ['openFile', 'multiSelections'],
-    filters: [{ name: 'Vidéos', extensions: ['mp4', 'mkv', 'mov', 'avi', 'webm', 'flv', 'wmv', 'mpg', 'mpeg', 'ts', 'm4v', '3gp', 'ogv'] }]
+    filters: [{ name: 'Tous les fichiers', extensions: ['*'] }]
   });
-  return r.canceled ? [] : r.filePaths.filter(p => isVideoPath(p));
+  return r.canceled ? [] : r.filePaths;
 });
 
 ipcMain.handle('list-drive', async () => {
@@ -490,6 +652,223 @@ ipcMain.handle('list-drive', async () => {
     const items = (tree.items || []).filter(i => i.type === 'file' && !i.renditionOf && (mimeFor(i.name).startsWith('video/') || isVideoPath(i.name)));
     return { items };
   } catch (err) { return { error: err.message }; }
+});
+
+ipcMain.handle('explorer-tree', async () => {
+  const a = buildApi();
+  if (!a) return { error: 'Non connecté' };
+  try { return { items: (await a.tree()).items || [] }; }
+  catch (err) { return { error: err.message }; }
+});
+
+ipcMain.handle('disk-mkdir', async (e, name, parentId) => {
+  const a = buildApi();
+  if (!a) return { error: 'Non connecté' };
+  try { return await a.mkdir(name, parentId || null); }
+  catch (err) { return { error: err.message }; }
+});
+
+ipcMain.handle('disk-rename', async (e, id, name) => {
+  const a = buildApi();
+  if (!a) return { error: 'Non connecté' };
+  try { return await a.rename(id, name); }
+  catch (err) { return { error: err.message }; }
+});
+
+ipcMain.handle('disk-move', async (e, id, parentId) => {
+  const a = buildApi();
+  if (!a) return { error: 'Non connecté' };
+  try { return await a.move(id, parentId || null); }
+  catch (err) { return { error: err.message }; }
+});
+
+ipcMain.handle('disk-delete', async (e, id) => {
+  const a = buildApi();
+  if (!a) return { error: 'Non connecté' };
+  try { return await a.del(id); }
+  catch (err) { return { error: err.message }; }
+});
+
+ipcMain.handle('disk-shares', async () => {
+  const a = buildApi();
+  if (!a) return { error: 'Non connecté' };
+  try { return await a.shares(); }
+  catch (err) { return { error: err.message }; }
+});
+
+ipcMain.handle('disk-shared-with-me', async () => {
+  const a = buildApi();
+  if (!a) return { error: 'Non connecté' };
+  try { return await a.sharedWithMe(); }
+  catch (err) { return { error: err.message }; }
+});
+
+ipcMain.handle('disk-share-create', async (e, body) => {
+  const a = buildApi();
+  if (!a) return { error: 'Non connecté' };
+  try { return await a.createShare(body || {}); }
+  catch (err) { return { error: err.message }; }
+});
+
+ipcMain.handle('disk-share-delete', async (e, id) => {
+  const a = buildApi();
+  if (!a) return { error: 'Non connecté' };
+  try { return await a.deleteShare(id); }
+  catch (err) { return { error: err.message }; }
+});
+
+ipcMain.handle('disk-download', async (e, id, defaultName) => {
+  const a = buildApi();
+  if (!a) return { error: 'Non connecté' };
+  try {
+    const r = await dialog.showSaveDialog(win, { defaultPath: defaultName || 'fichier' });
+    if (r.canceled || !r.filePath) return { ok: true, canceled: true };
+    const res = await a.download(id);
+    if (!res.ok) return { error: 'Erreur téléchargement ' + res.status };
+    const buf = Buffer.from(await res.arrayBuffer());
+    fs.writeFileSync(r.filePath, buf);
+    return { ok: true, path: r.filePath };
+  } catch (err) { return { error: err.message }; }
+});
+
+ipcMain.handle('disk-zip', async (e, id, defaultName) => {
+  const a = buildApi();
+  if (!a) return { error: 'Non connecté' };
+  try {
+    const r = await dialog.showSaveDialog(win, { defaultPath: defaultName || 'dossier.zip' });
+    if (r.canceled || !r.filePath) return { ok: true, canceled: true };
+    const res = await a.zip(id);
+    if (!res.ok) return { error: 'Erreur ZIP ' + res.status };
+    const buf = Buffer.from(await res.arrayBuffer());
+    fs.writeFileSync(r.filePath, buf);
+    return { ok: true, path: r.filePath };
+  } catch (err) { return { error: err.message }; }
+});
+
+const TEMP_OPEN_DIR = path.join(os.tmpdir(), 'blt-drive-open');
+let openEditsWatcher = null;
+const openEdits = new Map(); // target -> { target, id, name, mime, parentId, mtimeMs, size, lastSeen, busy }
+const openingIds = new Set(); // id -> évite les doublons de téléchargement au clic
+
+function cleanOpenDir() {
+  try { fs.rmSync(TEMP_OPEN_DIR, { recursive: true, force: true }); } catch {}
+}
+
+function startEditWatcher() {
+  if (openEditsWatcher) return;
+  openEditsWatcher = setInterval(async () => {
+    const now = Date.now();
+    for (const [target, e] of [...openEdits]) {
+      if (e.busy) continue;
+      try {
+        const st = fs.statSync(target);
+        const changed = st.mtimeMs !== e.mtimeMs || st.size !== e.size;
+        if (changed) {
+          // l'app externe écrit : on note l'état courant et on attend la stabilisation
+          e.lastSeen = { mtimeMs: st.mtimeMs, size: st.size };
+          e.stableSince = null;
+          e.dirty = true;
+          e.mtimeMs = st.mtimeMs;
+          e.size = st.size;
+          continue;
+        }
+        if (e.lastSeen && e.lastSeen.mtimeMs === st.mtimeMs && e.lastSeen.size === st.size) {
+          if (!e.stableSince) e.stableSince = now;
+          if (now - e.stableSince < 2500) continue;
+          e.lastSeen = null;
+          e.stableSince = null;
+          e.busy = true;
+          try { await reimportEdit(e); }
+          catch { }
+          finally { e.busy = false; }
+          continue;
+        }
+        // Modifications en attente de réimport (échec précédent) : nouvelle tentative
+        if (e.dirty && e.retryAt && now >= e.retryAt) {
+          e.retryAt = null;
+          e.busy = true;
+          try { await reimportEdit(e); }
+          catch { }
+          finally { e.busy = false; }
+          continue;
+        }
+        // Plus aucune modification : nettoyage après longue inactivité (édition terminée)
+        if (!e.dirty && now - e.mtimeMs > 10 * 60 * 1000) {
+          openEdits.delete(target);
+          try { fs.rmSync(target, { force: true }); dlog('open-external: temp supprimé après inactivité ' + target); } catch {}
+        }
+      } catch {
+        // fichier disparu (ex: app externe l'a déplacé/supprimé) : on abandonne la surveillance
+        openEdits.delete(target);
+        try { fs.rmSync(target, { force: true }); } catch {}
+      }
+    }
+  }, 1500);
+}
+
+async function reimportEdit(e) {
+  const a = buildApi();
+  if (!a) { e.retryAt = Date.now() + 30000; return; }
+  try {
+    const cfg = await a.config();
+    if (!cfg.key || !cfg.webhook) throw new Error('Clé ou webhook indisponible sur le serveur');
+    const size = fs.statSync(e.target).size;
+    dlog('open-external: réimport de « ' + e.name + ' » (' + size + ' o)…');
+    emit({ type: 'reimport-start', name: e.name });
+    await uploadFile(a, cfg.key, cfg.webhook, e.target, e.name, e.mime || 'application/octet-stream', e.parentId || null, null, '', e.id);
+    dlog('open-external: réimport OK id=' + e.id);
+    const st = fs.statSync(e.target);
+    e.mtimeMs = st.mtimeMs;
+    e.size = st.size;
+    e.dirty = false;
+    e.retryAt = null;
+    emit({ type: 'reimport-ok', id: e.id, name: e.name });
+  } catch (err) {
+    dlog('open-external: réimport échec ' + (err && err.message));
+    e.retryAt = Date.now() + 30000;
+    emit({ type: 'error', detail: 'Réimport de « ' + e.name + ' » échoué (nouvel essai dans 30 s) : ' + ((err && err.message) || String(err)) });
+  }
+}
+
+ipcMain.handle('disk-open-external', async (e, id, name, extra) => {
+  const a = buildApi();
+  if (!a) return { error: 'Non connecté' };
+  if (openingIds.has(id)) return { busy: true, ok: false };
+  openingIds.add(id);
+  try {
+    emit({ type: 'open-progress', id, name: name || 'fichier', pct: 0 });
+    const safe = (name || 'fichier').replace(/[\\/:*?"<>|]+/g, '_').slice(0, 120);
+    fs.mkdirSync(TEMP_OPEN_DIR, { recursive: true });
+    const target = path.join(TEMP_OPEN_DIR, safe);
+    const total = (extra && extra.size) || 0;
+    let received = 0;
+    let lastEmit = 0;
+    let lastPct = -2;
+    const emitProg = (done) => {
+      const pct = total ? Math.round(received / total * 100) : -1;
+      const now = Date.now();
+      if (now - lastEmit < 200 && !done) return;
+      lastEmit = now;
+      if (pct === lastPct && pct !== 100) return;
+      lastPct = pct;
+      emit({ type: 'open-progress', id, name: name || 'fichier', pct, received, total });
+    };
+    const cfg = await a.config();
+    if (!cfg.key) throw new Error('Clé de chiffrement indisponible sur le serveur');
+    const res = await downloadToFile(a, cfg.key, id, target, (recv) => { received = recv; emitProg(false); }, cfg.webhook);
+    received = res.size;
+    emitProg(true);
+    const st = fs.statSync(target);
+    const mime = (extra && extra.mime) || 'application/octet-stream';
+    dlog('open-external: écrit ' + target + ' (' + st.size + ' o), ouverture…');
+    const err = await shell.openPath(target);
+    if (err) { dlog('open-external: shell.openPath error=' + err); return { error: err }; }
+    const entry = { target, id, name, mime, parentId: (extra && extra.parentId) || null, mtimeMs: st.mtimeMs, size: st.size, lastSeen: null, stableSince: null, dirty: false, retryAt: null, busy: false };
+    openEdits.set(target, entry);
+    startEditWatcher();
+    return { ok: true, path: target };
+  } catch (err) { return { error: err.message }; }
+  finally { openingIds.delete(id); }
 });
 
 ipcMain.handle('import-local', (e, paths, opts) => {
