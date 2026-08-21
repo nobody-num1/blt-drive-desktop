@@ -1,7 +1,7 @@
 {
   "name": "blt-drive-desktop",
-  "version": "0.6.5",
-  "description": "BLT Drive Desktop — explore le drive Discord façon explorateur Windows, importe et transcode des vidéos en local puis uploade original + renditions 720/480/360p. v0.6.5 : double-clic = ouverture application, triple-clic = aperçu, import de tout type de fichier, progression en octets, bouton Déplacer",
+  "version": "0.7.0",
+  "description": "BLT Drive Desktop — v0.7.0 : refonte UI gaming BLT (aurora, glassmorphism, tokens néon), sidebar pleine hauteur, layout grille, scrollbar dégradée",
   "main": "main.js",
   "scripts": {
     "start": "electron .",
