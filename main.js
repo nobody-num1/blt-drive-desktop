@@ -548,6 +548,19 @@ if (!gotLock) {
       }
     }
     createWindow();
+    if (!settings._disclaimerSeen) {
+      dialog.showMessageBox(win, {
+        type: 'warning',
+        title: '⚠️ Avertissement',
+        message: 'Avertissement important',
+        detail: 'Nous ne prenons rien en charge en cas de perte de fichiers, de dossiers, ou de toute autre donnée.\n\nUtilisez ce service à vos propres risques.',
+        buttons: ['J\'ai compris'],
+        defaultId: 0,
+        noLink: true
+      });
+      settings._disclaimerSeen = true;
+      saveSettings();
+    }
     setupStreamProtocol();
     if (loginOnShow) {
       const d = loginOnShow; loginOnShow = null;
