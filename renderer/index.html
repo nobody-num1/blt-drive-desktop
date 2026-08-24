@@ -8,29 +8,26 @@
 </head>
 <body class="explorer-body">
   <div id="login-screen" style="position:fixed;inset:0;z-index:9999;background:#040323;display:none;align-items:center;justify-content:center;font-family:'Space Grotesk',system-ui,sans-serif">
-    <div style="max-width:520px;width:90%;text-align:center;padding:48px 32px;background:rgba(14,30,233,.08);border:1px solid rgba(14,30,233,.25);border-radius:20px;backdrop-filter:blur(18px)">
-      <div style="font-size:48px;margin-bottom:16px">🔒</div>
-      <h1 style="margin:0 0 8px;font-size:26px;background:linear-gradient(135deg,#0E1EE9,#6018E9);-webkit-background-clip:text;-webkit-text-fill-color:transparent;font-weight:700">Veuillez vous connecter</h1>
-      <p style="margin:0 0 24px;color:#8a83a8;font-size:14px;line-height:1.6">Connecte-toi à un compte Discord pour accéder à ton espace disque BLT Drive.</p>
-      <div style="text-align:left;margin:0 auto 24px;max-width:380px;display:flex;flex-direction:column;gap:14px">
-        <div style="display:flex;gap:12px;align-items:flex-start">
-          <span style="flex-shrink:0;width:28px;height:28px;border-radius:50%;background:linear-gradient(135deg,#0E1EE9,#6018E9);display:flex;align-items:center;justify-content:center;font-size:13px;font-weight:700;color:#fff">1</span>
-          <div><b style="color:#D7A6E2">Ouvre les paramètres</b><br><span style="color:#8a83a8;font-size:13px">Clique sur l'icône ⚙️ en haut à droite</span></div>
-        </div>
-        <div style="display:flex;gap:12px;align-items:flex-start">
-          <span style="flex-shrink:0;width:28px;height:28px;border-radius:50%;background:linear-gradient(135deg,#0E1EE9,#6018E9);display:flex;align-items:center;justify-content:center;font-size:13px;font-weight:700;color:#fff">2</span>
-          <div><b style="color:#D7A6E2">Entre l'URL du drive</b><br><span style="color:#8a83a8;font-size:13px">https://blt-drive.nobodylem0.workers.dev</span></div>
-        </div>
-        <div style="display:flex;gap:12px;align-items:flex-start">
-          <span style="flex-shrink:0;width:28px;height:28px;border-radius:50%;background:linear-gradient(135deg,#0E1EE9,#6018E9);display:flex;align-items:center;justify-content:center;font-size:13px;font-weight:700;color:#fff">3</span>
-          <div><b style="color:#D7A6E2">Clique « Se connecter »</b><br><span style="color:#8a83a8;font-size:13px">Tu seras redirigé vers Discord pour autoriser l'accès</span></div>
-        </div>
-        <div style="display:flex;gap:12px;align-items:flex-start">
-          <span style="flex-shrink:0;width:28px;height:28px;border-radius:50%;background:linear-gradient(135deg,#0E1EE9,#6018E9);display:flex;align-items:center;justify-content:center;font-size:13px;font-weight:700;color:#fff">4</span>
-          <div><b style="color:#D7A6E2">C'est bon !</b><br><span style="color:#8a83a8;font-size:13px">Reviens ici, l'app se connecte automatiquement</span></div>
+    <div style="max-width:480px;width:92%;padding:40px 28px;background:rgba(14,30,233,.06);border:1px solid rgba(14,30,233,.2);border-radius:20px;backdrop-filter:blur(18px)">
+      <div style="text-align:center;margin-bottom:24px">
+        <div style="font-size:42px;margin-bottom:12px">🔒</div>
+        <h1 style="margin:0 0 6px;font-size:22px;background:linear-gradient(135deg,#0E1EE9,#6018E9);-webkit-background-clip:text;-webkit-text-fill-color:transparent;font-weight:700">Veuillez vous connecter</h1>
+        <p style="margin:0;color:#8a83a8;font-size:13px">Connecte-toi pour accéder à ton espace disque.</p>
+      </div>
+      <div style="margin-bottom:20px">
+        <label style="display:block;font-size:12px;color:#8a83a8;margin-bottom:6px;text-transform:uppercase;letter-spacing:.08em">URL du drive</label>
+        <input type="text" id="login-origin" value="https://blt-drive.nobodylem0.workers.dev" style="width:100%;padding:10px 14px;background:rgba(255,255,255,.05);border:1px solid rgba(255,255,255,.12);border-radius:10px;color:#e0dce8;font-size:14px;font-family:monospace;outline:none;box-sizing:border-box">
+      </div>
+      <button id="login-btn" style="width:100%;padding:12px;background:linear-gradient(135deg,#0E1EE9,#6018E9);border:none;border-radius:10px;color:#fff;font-size:15px;font-weight:600;cursor:pointer;font-family:inherit;margin-bottom:16px">Se connecter</button>
+      <div id="login-error" style="display:none;padding:10px;background:rgba(220,50,50,.12);border:1px solid rgba(220,50,50,.25);border-radius:8px;color:#f87171;font-size:12px;margin-bottom:16px;text-align:center"></div>
+      <div style="border-top:1px solid rgba(255,255,255,.08);padding-top:16px">
+        <p style="margin:0 0 10px;font-size:11px;color:#5a5478;text-transform:uppercase;letter-spacing:.1em">Comment ça marche</p>
+        <div style="display:flex;flex-direction:column;gap:10px;font-size:13px;color:#8a83a8">
+          <div style="display:flex;gap:10px;align-items:flex-start"><span style="flex-shrink:0;width:22px;height:22px;border-radius:50%;background:linear-gradient(135deg,#0E1EE9,#6018E9);display:flex;align-items:center;justify-content:center;font-size:11px;font-weight:700;color:#fff">1</span><span>Entre l'URL de ton serveur BLT Drive</span></div>
+          <div style="display:flex;gap:10px;align-items:flex-start"><span style="flex-shrink:0;width:22px;height:22px;border-radius:50%;background:linear-gradient(135deg,#0E1EE9,#6018E9);display:flex;align-items:center;justify-content:center;font-size:11px;font-weight:700;color:#fff">2</span><span>Clique « Se connecter » puis autorise via Discord</span></div>
+          <div style="display:flex;gap:10px;align-items:flex-start"><span style="flex-shrink:0;width:22px;height:22px;border-radius:50%;background:linear-gradient(135deg,#0E1EE9,#6018E9);display:flex;align-items:center;justify-content:center;font-size:11px;font-weight:700;color:#fff">3</span><span>Reviens ici, c'est automatique</span></div>
         </div>
       </div>
-      <p style="margin:0;color:#5a5478;font-size:12px">L'application a besoin d'un serveur BLT Drive pour fonctionner.</p>
     </div>
   </div>
   <header class="top">

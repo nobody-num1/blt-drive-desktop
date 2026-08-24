@@ -1184,6 +1184,31 @@ $('btn-test').onclick = async () => {
   await refresh(true);
 };
 
+// Login screen handler
+(function() {
+  var loginBtn = document.getElementById('login-btn');
+  if (!loginBtn) return;
+  loginBtn.onclick = async function() {
+    var errEl = document.getElementById('login-error');
+    var origin = (document.getElementById('login-origin') || {}).value || '';
+    origin = origin.trim();
+    if (!origin) { if (errEl) { errEl.textContent = 'Entre l\'URL du drive'; errEl.style.display = 'block'; } return; }
+    loginBtn.disabled = true;
+    loginBtn.textContent = 'Connexion...';
+    if (errEl) errEl.style.display = 'none';
+    try {
+      await window.blt.saveSettings({ origin: origin });
+      // Also update the settings drawer input so it stays in sync
+      var originInput = document.getElementById('in-origin');
+      if (originInput) originInput.value = origin;
+      var r = await window.blt.connectAccount();
+      await refresh(true);
+      if (r && !r.ok && errEl) { errEl.textContent = r.error || 'Erreur de connexion'; errEl.style.display = 'block'; }
+    } catch (e) { if (errEl) { errEl.textContent = e.message || 'Erreur'; errEl.style.display = 'block'; } }
+    finally { loginBtn.disabled = false; loginBtn.textContent = 'Se connecter'; }
+  };
+})();
+
 window.blt.onEvent(evt => {
   if (evt.type === 'job-start') updateJob(evt.job, { state: 'En cours', detail: 'Démarrage…' });
   else if (evt.type === 'phase') updateJob(evt.job, { detail: evt.detail, pct: evt.pct });
