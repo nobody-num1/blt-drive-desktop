@@ -130,6 +130,7 @@ function applyRole(r) {
   state.quotaRole = r.quotaRole || '';
   const allow = state.canImport;
   $('btn-pick').disabled = !allow;
+  var bpf = $('btn-pick-folder'); if (bpf) bpf.disabled = !allow;
   $('btn-new-folder').disabled = !allow;
   $('btn-move').disabled = !allow;
   const lk = $('import-locked');
@@ -1058,6 +1059,20 @@ async function doPick() {
   }
 }
 
+async function doPickFolder() {
+  if (!state.canImport) { showError('Connecte-toi à un compte Discord pour importer.'); return; }
+  const paths = await window.blt.pickFolder();
+  if (paths && paths.length) {
+    const q = collectQualities();
+    const o = opts();
+    o.qualities = q;
+    o.parentId = state.currentId;
+    try { await window.blt.importLocal(paths, o); }
+    catch (e) { showError(e.message); }
+    setTimeout(() => refresh(false), 800);
+  }
+}
+
 async function runDriveImport(id) {
   if (!state.canImport) { showError('Connecte-toi à un compte Discord pour importer des fichiers.'); return; }
   clearError();
@@ -1152,6 +1167,62 @@ async function boot() {
   } catch {}
 }
 
+// OS file/folder drag-and-drop import
+document.addEventListener('dragover', e => { e.preventDefault(); e.dataTransfer.dropEffect = 'copy'; });
+document.addEventListener('drop', async e => {
+  e.preventDefault();
+  if (!state.canImport) { showError('Connecte-toi pour importer.'); return; }
+  const files = [];
+  // Note: webkitGetAsEntry is the standard way to get file paths in Electron
+  const items = e.dataTransfer.items;
+  if (items) {
+    for (const item of items) {
+      const entry = item.webkitGetAsEntry ? item.webkitGetAsEntry() : null;
+      if (entry) {
+        const paths = await readEntry(entry);
+        files.push(...paths);
+      }
+    }
+  }
+  // Fallback: use dataTransfer.files
+  if (!files.length && e.dataTransfer.files) {
+    for (const f of e.dataTransfer.files) {
+      if (f.path) files.push(f.path);
+    }
+  }
+  if (!files.length) return;
+  const q = collectQualities();
+  const hasVideo = files.some(p => isVideoFile(p));
+  if (hasVideo && !q.length) { showError('Sélectionne au moins une version à générer'); return; }
+  const o = opts();
+  o.qualities = q;
+  o.parentId = state.currentId;
+  try { await window.blt.importLocal(files, o); } catch (err) { showError(err.message); }
+  setTimeout(() => refresh(false), 800);
+});
+
+function readEntry(entry) {
+  return new Promise(resolve => {
+    if (entry.isFile) {
+      entry.file(f => { resolve(f.path ? [f.path] : []); }, () => resolve([]));
+    } else if (entry.isDirectory) {
+      const reader = entry.createReader();
+      const all = [];
+      const readBatch = () => {
+        reader.readEntries(async entries => {
+          if (!entries.length) { resolve(all); return; }
+          for (const e of entries) {
+            const p = await readEntry(e);
+            all.push(...p);
+          }
+          readBatch();
+        }, () => resolve(all));
+      };
+      readBatch();
+    } else resolve([]);
+  });
+}
+
 // ── Événements ────────────────────────────────────────────────
 document.addEventListener('click', closeCtxMenu);
 document.addEventListener('keydown', e => {
@@ -1174,6 +1245,7 @@ $('btn-refresh').onclick = () => refresh(false);
 $('btn-new-folder').onclick = promptNewFolder;
 $('btn-move').onclick = () => promptMove();
 $('btn-pick').onclick = doPick;
+$('btn-pick-folder').onclick = doPickFolder;
 
 document.querySelectorAll('.col').forEach(c => c.onclick = () => setSort(c.dataset.sort));
 

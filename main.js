@@ -246,6 +246,19 @@ async function runUpload(api, key, webhook, filePath, name, mime, parentId, onCh
   return res;
 }
 
+function walkDir(dir) {
+  let results = [];
+  try {
+    const entries = fs.readdirSync(dir, { withFileTypes: true });
+    for (const e of entries) {
+      const full = path.join(dir, e.name);
+      if (e.isDirectory()) results = results.concat(walkDir(full));
+      else results.push(full);
+    }
+  } catch {}
+  return results;
+}
+
 async function importLocal(videos, opts) {
   const cfg = await api.config();
   if (!cfg.key) throw new Error('Clé de chiffrement indisponible sur le serveur');
@@ -253,7 +266,15 @@ async function importLocal(videos, opts) {
   if (!cfg.canImport) throw new Error('Connexion requise pour importer');
   const qualities = (opts.qualities || [720, 480, 360]).filter(q => !isNaN(q)).sort((a, b) => a - b);
   const includeTracks = opts.includeTracks !== false;
+  const allFiles = [];
   for (const v of videos) {
+    try {
+      const st = fs.statSync(v);
+      if (st.isDirectory()) allFiles.push(...walkDir(v));
+      else allFiles.push(v);
+    } catch { allFiles.push(v); }
+  }
+  for (const v of allFiles) {
     const j = path.basename(v);
     emit({ type: 'job-start', job: j });
     const tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'bltdrv-'));
@@ -678,6 +699,13 @@ ipcMain.handle('pick-files', async () => {
   const r = await dialog.showOpenDialog(win, {
     properties: ['openFile', 'multiSelections'],
     filters: [{ name: 'Tous les fichiers', extensions: ['*'] }]
+  });
+  return r.canceled ? [] : r.filePaths;
+});
+
+ipcMain.handle('pick-folder', async () => {
+  const r = await dialog.showOpenDialog(win, {
+    properties: ['openDirectory']
   });
   return r.canceled ? [] : r.filePaths;
 });

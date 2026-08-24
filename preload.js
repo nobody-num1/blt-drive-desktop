@@ -8,6 +8,7 @@ contextBridge.exposeInMainWorld('blt', {
   setActiveAccount: id => ipcRenderer.invoke('set-active-account', id),
   testConnection: () => ipcRenderer.invoke('test-connection'),
   pickFiles: () => ipcRenderer.invoke('pick-files'),
+  pickFolder: () => ipcRenderer.invoke('pick-folder'),
   listDrive: () => ipcRenderer.invoke('list-drive'),
   importLocal: (paths, opts) => ipcRenderer.invoke('import-local', paths, opts),
   importDrive: (fileId, opts) => ipcRenderer.invoke('import-drive', fileId, opts),
