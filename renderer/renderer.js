@@ -1190,17 +1190,10 @@ $('btn-test').onclick = async () => {
   if (!loginBtn) return;
   loginBtn.onclick = async function() {
     var errEl = document.getElementById('login-error');
-    var origin = (document.getElementById('login-origin') || {}).value || '';
-    origin = origin.trim();
-    if (!origin) { if (errEl) { errEl.textContent = 'Entre l\'URL du drive'; errEl.style.display = 'block'; } return; }
     loginBtn.disabled = true;
     loginBtn.textContent = 'Connexion...';
     if (errEl) errEl.style.display = 'none';
     try {
-      await window.blt.saveSettings({ origin: origin });
-      // Also update the settings drawer input so it stays in sync
-      var originInput = document.getElementById('in-origin');
-      if (originInput) originInput.value = origin;
       var r = await window.blt.connectAccount();
       await refresh(true);
       if (r && !r.ok && errEl) { errEl.textContent = r.error || 'Erreur de connexion'; errEl.style.display = 'block'; }
