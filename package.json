@@ -1,7 +1,7 @@
 {
   "name": "blt-drive-desktop",
-  "version": "0.7.2",
-  "description": "BLT Drive Desktop — v0.7.2 : nettoyage garanti des fichiers temporaires à la fermeture",
+  "version": "0.7.3",
+  "description": "BLT Drive Desktop — v0.7.3 : page login complète + tuto connexion",
   "main": "main.js",
   "scripts": {
     "start": "electron .",
