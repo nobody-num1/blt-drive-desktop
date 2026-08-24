@@ -145,6 +145,7 @@ async function refresh(showErrors) {
     clearError();
     state.connOk = !!r.ok;
     if (r.ok) {
+      var ls = document.getElementById('login-screen'); if (ls) ls.style.display = 'none';
       const acc = r.account ? r.account.label : 'Connecté';
       setBadge('✓ ' + acc, 'ok');
       const q = r.quota || {};
@@ -153,6 +154,7 @@ async function refresh(showErrors) {
       applyRole(r);
       await loadTree();
     } else {
+      var ls = document.getElementById('login-screen'); if (ls) ls.style.display = 'flex';
       setBadge(state.activeAccountId ? '✗ Connexion' : 'Non connecté', 'bad');
       $('status-quota').textContent = '';
       $('list-empty').style.display = 'block';
