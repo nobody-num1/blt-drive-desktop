@@ -220,8 +220,25 @@ function assertSpace(cfg, bytes) {
   }
 }
 
+const activeTmpDirs = new Set();
+
 function cleanDir(dir) {
-  fs.rmSync(dir, { recursive: true, force: true });
+  activeTmpDirs.delete(dir);
+  try { fs.rmSync(dir, { recursive: true, force: true }); } catch {}
+}
+
+function trackTmp(dir) { activeTmpDirs.add(dir); }
+
+function cleanOrphanedTmpDirs() {
+  try {
+    const tmp = os.tmpdir();
+    for (const name of fs.readdirSync(tmp)) {
+      if (name.startsWith('bltdrv-') || name.startsWith('dblt-')) {
+        const full = path.join(tmp, name);
+        try { fs.rmSync(full, { recursive: true, force: true }); } catch {}
+      }
+    }
+  } catch {}
 }
 
 async function runUpload(api, key, webhook, filePath, name, mime, parentId, onChunk, label) {
@@ -240,6 +257,7 @@ async function importLocal(videos, opts) {
     const j = path.basename(v);
     emit({ type: 'job-start', job: j });
     const tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'bltdrv-'));
+    trackTmp(tmp);
     try {
       const origName = baseName(path.basename(v));
       const mime = mimeFor(origName);
@@ -306,6 +324,7 @@ async function importDrive(fileId, opts) {
   const item = (tree.items || []).find(i => i.id === fileId);
   if (!item) throw new Error('Fichier introuvable sur le drive');
   const tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'dblt-'));
+  trackTmp(tmp);
   const j = item.name;
   emit({ type: 'job-start', job: j });
   try {
@@ -537,6 +556,7 @@ if (!gotLock) {
     registerProtocol();
     loadSettings();
     cleanOpenDir();
+    cleanOrphanedTmpDirs();
     try { await startCallbackServer(); } catch {}
     // Deep link reçu au démarrage (avant origin) : on l'applique dès que l'origin est connue
     const startup = process.argv.find(a => a.startsWith('bltdrive://'));
@@ -575,7 +595,12 @@ if (!gotLock) {
 
 app.on('window-all-closed', () => { if (process.platform !== 'darwin') app.quit(); });
 
-app.on('will-quit', () => { cleanOpenDir(); });
+app.on('will-quit', () => {
+  cleanOpenDir();
+  for (const dir of activeTmpDirs) { try { fs.rmSync(dir, { recursive: true, force: true }); } catch {} }
+  activeTmpDirs.clear();
+  cleanOrphanedTmpDirs();
+});
 
 ipcMain.on('app-log', (e, m) => dlog('[renderer] ' + String(m || '').slice(0, 200)));
 
