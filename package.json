@@ -1,7 +1,7 @@
 {
   "name": "blt-drive-desktop",
-  "version": "0.8.0",
-  "description": "BLT Drive Desktop — v0.8.0 : tunnel musique Discord + onglet Musique",
+  "version": "0.8.1",
+  "description": "BLT Drive Desktop — v0.8.1 : fix OAuth BLT Drive + yt-dlp bundle",
   "main": "main.js",
   "scripts": {
     "start": "electron .",
