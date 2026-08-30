@@ -5,6 +5,7 @@
   "main": "main.js",
   "scripts": {
     "start": "electron .",
+    "prebuild": "node scripts/download-ytdlp.js",
     "dist": "electron-builder"
   },
   "author": "BLT",
@@ -39,6 +40,10 @@
       {
         "from": "node_modules/ffmpeg-static/ffmpeg.exe",
         "to": "ffmpeg/ffmpeg.exe"
+      },
+      {
+        "from": "yt-dlp/yt-dlp.exe",
+        "to": "yt-dlp/yt-dlp.exe"
       }
     ],
     "win": {

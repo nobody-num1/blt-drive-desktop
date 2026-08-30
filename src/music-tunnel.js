@@ -16,7 +16,10 @@ const BOT_WS_URL = process.env.BOT_WS_URL || 'wss://bot-discord-blt-bot-discord-
 const RECONNECT_DELAY = 5000;
 
 function resolveYtDlp() {
-  // Cherche yt-dlp dans le PATH ou dans les ressources打包
+  // Cherche yt-dlp bundled avec l'app (extraResources)
+  const bundled = path.join(process.resourcesPath, 'yt-dlp', process.platform === 'win32' ? 'yt-dlp.exe' : 'yt-dlp');
+  if (fs.existsSync(bundled)) return bundled;
+  // Cherche dans le PATH
   const possible = ['yt-dlp', 'yt-dlp.exe'];
   for (const name of possible) {
     try {
@@ -25,10 +28,7 @@ function resolveYtDlp() {
       if (p && fs.existsSync(p)) return p;
     } catch {}
   }
-  // Fallback : bundled avec l'app
-  const bundled = path.join(process.resourcesPath, 'yt-dlp', process.platform === 'win32' ? 'yt-dlp.exe' : 'yt-dlp');
-  if (fs.existsSync(bundled)) return bundled;
-  return 'yt-dlp'; // PATH
+  return 'yt-dlp'; // fallback PATH
 }
 
 function start(dId, tk, opts = {}) {
