@@ -88,6 +88,31 @@
           <div class="job-empty">Aucune tâche</div>
         </div>
       </section>
+
+      <section class="panel p-music" style="display:none">
+        <h2>🎵 Musique</h2>
+        <div class="music-status" id="music-status">
+          <div class="music-status-card" id="music-status-card">
+            <div class="music-status-icon" id="music-status-icon">🔴</div>
+            <div class="music-status-text">
+              <div class="music-status-title" id="music-status-title">Non connecté</div>
+              <div class="music-status-detail" id="music-status-detail">Connecte-toi à Discord pour activer la musique</div>
+            </div>
+          </div>
+        </div>
+        <div class="music-stream" id="music-stream" style="display:none">
+          <h3>En lecture</h3>
+          <div class="music-now-playing" id="music-now-playing">-</div>
+        </div>
+        <div class="music-info" style="margin-top:16px">
+          <h3>Comment ça marche</h3>
+          <div style="font-size:12px;color:var(--muted);line-height:1.6">
+            <p>BLT Drive agit comme un proxy musical. Quand quelqu'un utilise <code>/music play</code> sur Discord, le bot te demande de streamer la musique depuis ton PC.</p>
+            <p>Ton IP résidentielle est utilisée pour télécharger la musique depuis YouTube, contournant ainsi les restrictions anti-bot.</p>
+            <p style="margin-top:8px"><strong>Prérequis :</strong> yt-dlp doit être installé et accessible dans le PATH.</p>
+          </div>
+        </div>
+      </section>
     </main>
   </div>
 

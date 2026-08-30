@@ -549,6 +549,12 @@ body.explorer-body .content { display: flex; flex-direction: column; min-height:
 .p-jobs { flex: 0 0 auto; max-height: 190px; display: flex; flex-direction: column; }
 .p-jobs .jobs { overflow-y: auto; min-height: 0; }
 .job-count { font-family: var(--font-mono); font-size: 10px; font-weight: 500; color: var(--accent-light); }
+.p-music { padding: 16px; }
+.music-status-card { display: flex; align-items: center; gap: 12px; padding: 12px 16px; background: rgba(255,255,255,.04); border: 1px solid var(--border); border-radius: 8px; }
+.music-status-icon { font-size: 24px; }
+.music-status-title { font-weight: 600; font-size: 14px; }
+.music-status-detail { font-size: 12px; color: var(--muted); margin-top: 2px; }
+.music-now-playing { font-size: 13px; padding: 8px 12px; background: rgba(255,255,255,.04); border-radius: 6px; font-family: var(--font-mono); }
 
 .toolbar {
   display: flex;

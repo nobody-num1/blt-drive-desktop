@@ -35,5 +35,9 @@ contextBridge.exposeInMainWorld('blt', {
   downloadUpdate: () => ipcRenderer.invoke('app-download-update'),
   quitInstall: () => ipcRenderer.invoke('app-quit-install'),
   onEvent: cb => { ipcRenderer.on('evt', (e, d) => cb(d)); },
-  log: m => ipcRenderer.send('app-log', m)
+  log: m => ipcRenderer.send('app-log', m),
+  // Tunnel Musique
+  musicTunnelStatus: () => ipcRenderer.invoke('music-tunnel-status'),
+  musicTunnelStart: (discordId, token) => ipcRenderer.invoke('music-tunnel-start', discordId, token),
+  musicTunnelStop: () => ipcRenderer.invoke('music-tunnel-stop'),
 });

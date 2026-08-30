@@ -254,6 +254,20 @@ function setView(v) {
   state.selection.clear();
   renderList();
   renderTree();
+  // Affiche/masque les panels
+  const panels = ['p-explorer', 'p-jobs', 'p-music'];
+  for (const p of panels) {
+    const el = document.querySelector('.' + p);
+    if (el) el.style.display = 'none';
+  }
+  if (v === 'music') {
+    const el = document.querySelector('.p-music');
+    if (el) el.style.display = '';
+    renderMusicPanel();
+  } else {
+    const el = document.querySelector('.p-explorer');
+    if (el) el.style.display = '';
+  }
 }
 
 // ── Rendu de l'arborescence ───────────────────────────────────
@@ -266,6 +280,7 @@ function renderTree() {
   html.push(treeRow('root', null, 'Mon Drive', '◇', state.view === 'drive' && !state.currentId));
   html.push(treeRow('shares', null, 'Mes partages', '🔗', state.view === 'shares'));
   html.push(treeRow('shared', null, 'Partagés avec moi', '📥', state.view === 'shared'));
+  html.push(treeRow('music', null, 'Musique', '🎵', state.view === 'music'));
   if (roots.length) {
     html.push('<div class="tree-sep" style="margin:6px 0;border-top:1px solid var(--border)"></div>');
     html.push(roots.map(f => treeNode(f, activePathIds, 0)).join(''));
@@ -277,6 +292,7 @@ function renderTree() {
     if (v === 'root') navigateTo(null, true);
     else if (v === 'shares') setView('shares');
     else if (v === 'shared') setView('shared');
+    else if (v === 'music') setView('music');
   });
   el.querySelectorAll('[data-open]').forEach(b => b.onclick = e => {
     e.stopPropagation();
@@ -1308,7 +1324,52 @@ window.blt.onEvent(evt => {
     }
     refresh(false);
   }
+  else if (evt.type === 'music-tunnel-status') {
+    updateMusicStatus(evt.status, evt.detail);
+  }
+  else if (evt.type === 'music-stream-request') {
+    updateMusicStream(evt.url);
+  }
 });
+
+// ── Musique : render panel ──
+function renderMusicPanel() {
+  window.blt.musicTunnelStatus().then(s => {
+    updateMusicStatus(s.status);
+  }).catch(() => {});
+}
+
+function updateMusicStatus(status, detail) {
+  const icon = $('music-status-icon');
+  const title = $('music-status-title');
+  const detailEl = $('music-status-detail');
+  if (!icon || !title || !detailEl) return;
+
+  if (status === 'connected') {
+    icon.textContent = '🟢';
+    title.textContent = 'Connecté au bot';
+    detailEl.textContent = 'Prêt à streamer de la musique';
+  } else if (status === 'streaming') {
+    icon.textContent = '🎵';
+    title.textContent = 'En stream...';
+    detailEl.textContent = detail || 'Téléchargement en cours...';
+  } else if (status === 'error') {
+    icon.textContent = '🔴';
+    title.textContent = 'Erreur';
+    detailEl.textContent = detail || 'Impossible de se connecter au bot';
+  } else {
+    icon.textContent = '🔴';
+    title.textContent = 'Non connecté';
+    detailEl.textContent = 'Connecte-toi à Discord pour activer la musique';
+  }
+}
+
+function updateMusicStream(url) {
+  const el = $('music-stream');
+  const np = $('music-now-playing');
+  if (el) el.style.display = '';
+  if (np) np.textContent = url ? url.slice(0, 80) + '...' : '-';
+}
 
 $('btn-update-dl').onclick = async () => {
   const e = updEls();

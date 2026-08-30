@@ -113,6 +113,12 @@ function applyLogin(d) {
   dlog('applyLogin: token=' + String(d.token||'').slice(0,8) + '… acc=' + (acc ? acc.id : 'null') + ' role=' + (d.role||'') + ' quotaRole=' + (d.quotaRole||''));
   saveSettings();
   emit({ type: 'account-connected', account: publicAccount(acc) });
+
+  // Démarre le tunnel musique avec le compte actif
+  if (d.discordId && d.token) {
+    startMusicTunnel(d.discordId, d.token);
+  }
+
   if (win && !win.isDestroyed()) {
     if (win.isMinimized()) win.restore();
     win.show();
@@ -627,6 +633,36 @@ ipcMain.on('app-log', (e, m) => dlog('[renderer] ' + String(m || '').slice(0, 20
 
 ipcMain.on('stream-port', e => {
   e.returnValue = localProxyPort;
+});
+
+// ── Tunnel Musique BLT Drive → Bot ──
+const musicTunnel = require('./src/music-tunnel');
+
+function startMusicTunnel(dId, tk) {
+  musicTunnel.start(dId, tk, {
+    onStatusChange: (status, detail) => {
+      emit({ type: 'music-tunnel-status', status, detail });
+      dlog('music-tunnel: ' + status + (detail ? ' ' + detail : ''));
+    },
+    onStreamRequest: (url) => {
+      emit({ type: 'music-stream-request', url });
+    }
+  });
+}
+
+ipcMain.handle('music-tunnel-status', () => ({
+  status: musicTunnel.getStatus(),
+  connected: musicTunnel.isConnected()
+}));
+
+ipcMain.handle('music-tunnel-start', (e, dId, tk) => {
+  startMusicTunnel(dId, tk);
+  return { ok: true };
+});
+
+ipcMain.handle('music-tunnel-stop', () => {
+  musicTunnel.stop();
+  return { ok: true };
 });
 
 ipcMain.handle('app-get-version', () => ({ version: app.getVersion(), updatable: autoUpdater.isUpdaterActive() }));

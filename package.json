@@ -11,7 +11,8 @@
   "license": "MIT",
   "dependencies": {
     "electron-updater": "^6.8.9",
-    "ffmpeg-static": "^5.2.0"
+    "ffmpeg-static": "^5.2.0",
+    "ws": "^8.18.0"
   },
   "devDependencies": {
     "electron": "^33.2.0",
