@@ -108,14 +108,10 @@ function handleStreamRequest(requestId, url) {
   const args = [
     '--extractor-args', 'youtube:player_client=tv,web_creator,mweb',
     '--sleep-requests', '1',
-    '--sleep-interval', '1',
-    '--max-sleep-interval', '3',
     '--force-ipv4',
     '--geo-bypass',
     '--no-playlist', '--no-video', '--no-warnings',
     '--retries', '3',
-    '--fragment-retries', '5',
-    '--extractor-retries', '3',
     '-o', '-',
     '-f', 'bestaudio/best',
     url
@@ -128,9 +124,32 @@ function handleStreamRequest(requestId, url) {
   }
 
   const proc = spawn(ytdlp, args, { stdio: ['ignore', 'pipe', 'pipe'] });
-  const chunks = [];
 
-  proc.stdout.on('data', (d) => chunks.push(d));
+  // Envoie les données en temps réel au fur et à mesure que yt-dlp télécharge
+  const CHUNK_SIZE = 64 * 1024;
+  let totalSent = 0;
+  let buffer = Buffer.alloc(0);
+  let sentStart = false;
+
+  proc.stdout.on('data', (d) => {
+    // Au premier chunk, signale que le stream commence
+    if (!sentStart) {
+      sentStart = true;
+      console.log(`[music-tunnel] Stream en cours...`);
+    }
+    buffer = Buffer.concat([buffer, d]);
+    // Envoie par chunks de 64 KB
+    while (buffer.length >= CHUNK_SIZE) {
+      const chunk = buffer.slice(0, CHUNK_SIZE);
+      buffer = buffer.slice(CHUNK_SIZE);
+      ws.send(JSON.stringify({
+        type: 'audio-chunk',
+        requestId,
+        data: chunk.toString('base64')
+      }));
+      totalSent += chunk.length;
+    }
+  });
 
   proc.stderr.on('data', (d) => {
     const text = d.toString();
@@ -139,27 +158,25 @@ function handleStreamRequest(requestId, url) {
   });
 
   proc.on('close', (code) => {
-    if (code !== 0 || chunks.length === 0) {
+    // Envoie le reste du buffer
+    if (buffer.length > 0) {
+      ws.send(JSON.stringify({
+        type: 'audio-chunk',
+        requestId,
+        data: buffer.toString('base64')
+      }));
+      totalSent += buffer.length;
+      buffer = Buffer.alloc(0);
+    }
+
+    if (code !== 0 && totalSent === 0) {
       console.error(`[music-tunnel] yt-dlp echec (code ${code})`);
       ws.send(JSON.stringify({ type: 'audio-error', requestId, error: `yt-dlp exit ${code}` }));
       emitStatus('connected');
       return;
     }
 
-    const audio = Buffer.concat(chunks);
-    console.log(`[music-tunnel] Audio pret: ${(audio.length / 1024).toFixed(1)} KB`);
-
-    // Envoie par chunks de 64 KB
-    const CHUNK_SIZE = 64 * 1024;
-    for (let i = 0; i < audio.length; i += CHUNK_SIZE) {
-      const chunk = audio.slice(i, i + CHUNK_SIZE);
-      ws.send(JSON.stringify({
-        type: 'audio-chunk',
-        requestId,
-        data: chunk.toString('base64')
-      }));
-    }
-
+    console.log(`[music-tunnel] Audio termine: ${(totalSent / 1024).toFixed(1)} KB`);
     ws.send(JSON.stringify({ type: 'audio-end', requestId }));
     emitStatus('connected');
   });
