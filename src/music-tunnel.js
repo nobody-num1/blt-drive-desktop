@@ -15,6 +15,25 @@ let onStreamRequest = null;
 const BOT_WS_URL = process.env.BOT_WS_URL || 'wss://bot-discord-blt-bot-discord-blt.up.railway.app/music/tunnel';
 const RECONNECT_DELAY = 5000;
 
+// File d'attente séquentielle : une seule opération à la fois
+const requestQueue = [];
+let processing = false;
+
+function enqueueRequest(fn) {
+  requestQueue.push(fn);
+  processQueue();
+}
+
+async function processQueue() {
+  if (processing) return;
+  processing = true;
+  while (requestQueue.length > 0) {
+    const fn = requestQueue.shift();
+    try { await fn(); } catch {}
+  }
+  processing = false;
+}
+
 // YouTube Music innertube search (pas de yt-dlp, pas d'anti-bot)
 const YTMUSIC_BASE = 'https://music.youtube.com';
 const INNERTUBE_KEY = 'AIzaSyC9XL3ZjWddXya6X74dJoCTL-WEYFDNX30';
@@ -154,12 +173,12 @@ function connect() {
     console.log(`[music-tunnel] Message recu: ${msg.type} (${msg.requestId || ''})`);
 
     if (msg.type === 'stream-request') {
-      handleStreamRequest(msg.requestId, msg.url);
+      enqueueRequest(() => handleStreamRequest(msg.requestId, msg.url));
       return;
     }
 
     if (msg.type === 'search-request') {
-      handleSearchRequest(msg.requestId, msg.query);
+      enqueueRequest(() => handleSearchRequest(msg.requestId, msg.query));
       return;
     }
   });
