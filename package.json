@@ -1,7 +1,7 @@
 {
   "name": "blt-drive-desktop",
-  "version": "0.8.10",
-  "description": "BLT Drive Desktop — v0.8.10 : console dans panneau Musique",
+  "version": "0.8.11",
+  "description": "BLT Drive Desktop — v0.8.11 : timeout fetch innertube",
   "main": "main.js",
   "scripts": {
     "start": "electron .",
