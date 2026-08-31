@@ -1,7 +1,7 @@
 {
   "name": "blt-drive-desktop",
-  "version": "0.8.8",
-  "description": "BLT Drive Desktop — v0.8.8 : debug messages + timeout 30s",
+  "version": "0.8.9",
+  "description": "BLT Drive Desktop — v0.8.9 : panneau console debug",
   "main": "main.js",
   "scripts": {
     "start": "electron .",
