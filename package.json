@@ -1,7 +1,7 @@
 {
   "name": "blt-drive-desktop",
-  "version": "0.8.1",
-  "description": "BLT Drive Desktop — v0.8.1 : fix OAuth BLT Drive + yt-dlp bundle",
+  "version": "0.8.2",
+  "description": "BLT Drive Desktop — v0.8.2 : fix prerequis + debug tunnel",
   "main": "main.js",
   "scripts": {
     "start": "electron .",
