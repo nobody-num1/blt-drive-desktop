@@ -20,28 +20,33 @@ const YTMUSIC_BASE = 'https://music.youtube.com';
 const INNERTUBE_KEY = 'AIzaSyC9XL3ZjWddXya6X74dJoCTL-WEYFDNX30';
 
 async function innertubeSearch(query) {
-  const resp = await fetch(`${YTMUSIC_BASE}/youtubei/v1/search?key=${INNERTUBE_KEY}&prettyPrint=false`, {
-    method: 'POST',
-    headers: {
-      'Content-Type': 'application/json',
-      'Origin': YTMUSIC_BASE,
-      'Referer': YTMUSIC_BASE + '/',
-    },
-    body: JSON.stringify({
-      query,
-      context: {
-        client: {
-          clientName: 'WEB_REMIX',
-          clientVersion: '1.20250801.00.00',
-          hl: 'fr',
-          gl: 'FR',
-        },
-      },
-    }),
-  });
+  const controller = new AbortController();
+  const timeout = setTimeout(() => controller.abort(), 10000);
 
-  if (!resp.ok) throw new Error(`innertube ${resp.status}`);
-  const data = await resp.json();
+  try {
+    const resp = await fetch(`${YTMUSIC_BASE}/youtubei/v1/search?key=${INNERTUBE_KEY}&prettyPrint=false`, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        'Origin': YTMUSIC_BASE,
+        'Referer': YTMUSIC_BASE + '/',
+      },
+      body: JSON.stringify({
+        query,
+        context: {
+          client: {
+            clientName: 'WEB_REMIX',
+            clientVersion: '1.20250801.00.00',
+            hl: 'fr',
+            gl: 'FR',
+          },
+        },
+      }),
+      signal: controller.signal,
+    });
+
+    if (!resp.ok) throw new Error(`innertube ${resp.status}`);
+    const data = await resp.json();
 
   const results = [];
   const tabs = data?.contents?.tabbedSearchResultsRenderer?.tabs || [];
@@ -74,6 +79,9 @@ async function innertubeSearch(query) {
   }
 
   return results;
+  } finally {
+    clearTimeout(timeout);
+  }
 }
 
 function resolveYtDlp() {
