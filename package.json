@@ -1,7 +1,7 @@
 {
   "name": "blt-drive-desktop",
-  "version": "0.8.3",
-  "description": "BLT Drive Desktop — v0.8.3 : tunnel demarre au lancement",
+  "version": "0.8.4",
+  "description": "BLT Drive Desktop — v0.8.4 : fix anti-bot YouTube",
   "main": "main.js",
   "scripts": {
     "start": "electron .",
