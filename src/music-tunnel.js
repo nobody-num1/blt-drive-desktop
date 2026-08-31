@@ -15,6 +15,67 @@ let onStreamRequest = null;
 const BOT_WS_URL = process.env.BOT_WS_URL || 'wss://bot-discord-blt-bot-discord-blt.up.railway.app/music/tunnel';
 const RECONNECT_DELAY = 5000;
 
+// YouTube Music innertube search (pas de yt-dlp, pas d'anti-bot)
+const YTMUSIC_BASE = 'https://music.youtube.com';
+const INNERTUBE_KEY = 'AIzaSyC9XL3ZjWddXya6X74dJoCTL-WEYFDNX30';
+
+async function innertubeSearch(query) {
+  const resp = await fetch(`${YTMUSIC_BASE}/youtubei/v1/search?key=${INNERTUBE_KEY}&prettyPrint=false`, {
+    method: 'POST',
+    headers: {
+      'Content-Type': 'application/json',
+      'Origin': YTMUSIC_BASE,
+      'Referer': YTMUSIC_BASE + '/',
+    },
+    body: JSON.stringify({
+      query,
+      context: {
+        client: {
+          clientName: 'WEB_REMIX',
+          clientVersion: '1.20250801.00.00',
+          hl: 'fr',
+          gl: 'FR',
+        },
+      },
+    }),
+  });
+
+  if (!resp.ok) throw new Error(`innertube ${resp.status}`);
+  const data = await resp.json();
+
+  const results = [];
+  const tabs = data?.contents?.tabbedSearchResultsRenderer?.tabs || [];
+  for (const tab of tabs) {
+    const sections = tab?.tabRenderer?.content?.sectionListRenderer?.contents || [];
+    for (const section of sections) {
+      // musicCardShelfRenderer
+      const shelf = section?.musicCardShelfRenderer;
+      if (shelf) {
+        for (const item of shelf?.contents || []) {
+          const song = item?.musicResponsiveListItemRenderer;
+          if (!song) continue;
+          const title = song?.flexColumns?.[0]?.musicResponsiveListItemFlexColumnRenderer?.text?.runs?.[0]?.text;
+          const videoId = song?.overlay?.musicItemThumbnailOverlayRenderer?.content?.musicPlayButtonRenderer?.playNavigationEndpoint?.watchEndpoint?.videoId;
+          if (title && videoId) results.push({ title, videoId });
+        }
+      }
+      // musicShelfRenderer (fallback)
+      const shelf2 = section?.musicShelfRenderer;
+      if (shelf2) {
+        for (const item of shelf2?.contents || []) {
+          const song = item?.musicResponsiveListItemRenderer;
+          if (!song) continue;
+          const title = song?.flexColumns?.[0]?.musicResponsiveListItemFlexColumnRenderer?.text?.runs?.[0]?.text;
+          const videoId = song?.overlay?.musicItemThumbnailOverlayRenderer?.content?.musicPlayButtonRenderer?.playNavigationEndpoint?.watchEndpoint?.videoId;
+          if (title && videoId) results.push({ title, videoId });
+        }
+      }
+    }
+  }
+
+  return results;
+}
+
 function resolveYtDlp() {
   // Cherche yt-dlp bundled avec l'app (extraResources)
   const bundled = path.join(process.resourcesPath, 'yt-dlp', process.platform === 'win32' ? 'yt-dlp.exe' : 'yt-dlp');
@@ -108,6 +169,26 @@ function connect() {
 function handleSearchRequest(requestId, query) {
   console.log(`[music-tunnel] Search: ${query.slice(0, 60)}`);
 
+  // 1) Innertube search (pas de yt-dlp, pas d'anti-bot)
+  innertubeSearch(query).then(results => {
+    if (results.length > 0) {
+      const r = results[0];
+      const result = { title: r.title, url: `https://music.youtube.com/watch?v=${r.videoId}`, duration: 0 };
+      console.log(`[music-tunnel] Search innertube ok: ${result.title}`);
+      ws.send(JSON.stringify({ type: 'search-result', requestId, result }));
+    } else {
+      // 2) Fallback yt-dlp
+      searchWithYtdlp(requestId, query);
+    }
+  }).catch(err => {
+    console.error(`[music-tunnel] Search innertube echec: ${err.message}`);
+    // 2) Fallback yt-dlp
+    searchWithYtdlp(requestId, query);
+  });
+}
+
+function searchWithYtdlp(requestId, query) {
+  console.log(`[music-tunnel] Search yt-dlp fallback: ${query.slice(0, 60)}`);
   const ytdlp = resolveYtDlp();
   const searchUrl = 'https://music.youtube.com/search?q=' + encodeURIComponent(query);
   const args = [
