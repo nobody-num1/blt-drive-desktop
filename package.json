@@ -1,7 +1,7 @@
 {
   "name": "blt-drive-desktop",
-  "version": "0.8.4",
-  "description": "BLT Drive Desktop — v0.8.4 : fix anti-bot YouTube",
+  "version": "0.8.5",
+  "description": "BLT Drive Desktop — v0.8.5 : stream audio temps reel",
   "main": "main.js",
   "scripts": {
     "start": "electron .",
