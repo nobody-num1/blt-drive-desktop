@@ -38,6 +38,8 @@ function start(dId, tk, opts = {}) {
   onStatusChange = opts.onStatusChange || null;
   onStreamRequest = opts.onStreamRequest || null;
 
+  console.log('[music-tunnel] Demarrage pour discordId=' + (dId || 'null') + ' token=' + (tk ? tk.slice(0, 8) + '...' : 'null'));
+
   try { WebSocket = require('ws'); } catch {
     console.error('[music-tunnel] Module "ws" manquant. Installe-le : npm install ws');
     return;
@@ -49,10 +51,11 @@ function start(dId, tk, opts = {}) {
 function connect() {
   if (ws) { try { ws.close(); } catch {} }
 
+  console.log('[music-tunnel] Connexion vers ' + BOT_WS_URL);
   ws = new WebSocket(BOT_WS_URL);
 
   ws.on('open', () => {
-    console.log('[music-tunnel] Connecte au bot, auth...');
+    console.log('[music-tunnel] WebSocket ouvert, envoi auth...');
     ws.send(JSON.stringify({ type: 'auth', discordId, token }));
   });
 
@@ -85,14 +88,15 @@ function connect() {
     }
   });
 
-  ws.on('close', () => {
+  ws.on('close', (code, reason) => {
+    console.log('[music-tunnel] Ferme (code=' + code + ' reason=' + (reason || '') + ')');
     connected = false;
     emitStatus('disconnected');
     scheduleReconnect();
   });
 
   ws.on('error', (err) => {
-    console.error('[music-tunnel] Erreur WebSocket:', err.message?.slice(0, 80));
+    console.error('[music-tunnel] Erreur WebSocket:', err.code, err.message?.slice(0, 80));
   });
 }
 
