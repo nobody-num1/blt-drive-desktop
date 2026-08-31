@@ -86,6 +86,11 @@ function connect() {
       handleStreamRequest(msg.requestId, msg.url);
       return;
     }
+
+    if (msg.type === 'search-request') {
+      handleSearchRequest(msg.requestId, msg.query);
+      return;
+    }
   });
 
   ws.on('close', (code, reason) => {
@@ -97,6 +102,56 @@ function connect() {
 
   ws.on('error', (err) => {
     console.error('[music-tunnel] Erreur WebSocket:', err.code, err.message?.slice(0, 80));
+  });
+}
+
+function handleSearchRequest(requestId, query) {
+  console.log(`[music-tunnel] Search: ${query.slice(0, 60)}`);
+
+  const ytdlp = resolveYtDlp();
+  const searchUrl = 'https://music.youtube.com/search?q=' + encodeURIComponent(query);
+  const args = [
+    '--extractor-args', 'youtube:player_client=tv,web_creator,mweb',
+    '--no-warnings', '--no-playlist',
+    '--playlist-items', '1',
+    '--print', '%(title)s',
+    '--print', '%(webpage_url)s',
+    '--print', '%(duration)s',
+    searchUrl
+  ];
+
+  const proc = spawn(ytdlp, args, { stdio: ['ignore', 'pipe', 'pipe'] });
+  let stdout = '';
+  let stderr = '';
+
+  proc.stdout.on('data', (d) => { stdout += d.toString(); });
+  proc.stderr.on('data', (d) => { stderr += d.toString(); });
+
+  proc.on('close', (code) => {
+    if (code !== 0 || !stdout.trim()) {
+      console.error(`[music-tunnel] Search echec (code ${code}): ${stderr.slice(0, 150)}`);
+      ws.send(JSON.stringify({ type: 'search-error', requestId, error: stderr.slice(0, 200) || `yt-dlp exit ${code}` }));
+      return;
+    }
+
+    const lines = stdout.split('\n').filter(Boolean);
+    if (lines.length < 2) {
+      ws.send(JSON.stringify({ type: 'search-error', requestId, error: 'Pas de resultats' }));
+      return;
+    }
+
+    const result = {
+      title: lines[0],
+      url: lines[1],
+      duration: parseInt(lines[2]) || 0
+    };
+    console.log(`[music-tunnel] Search ok: ${result.title}`);
+    ws.send(JSON.stringify({ type: 'search-result', requestId, result }));
+  });
+
+  proc.on('error', (err) => {
+    console.error('[music-tunnel] Search erreur:', err.message);
+    ws.send(JSON.stringify({ type: 'search-error', requestId, error: err.message }));
   });
 }
 
