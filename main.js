@@ -5,6 +5,19 @@ const http = require('http');
 const { app, BrowserWindow, ipcMain, dialog, shell, screen, protocol } = require('electron');
 const { autoUpdater } = require('electron-updater');
 
+// ── Forward main process logs to renderer ──
+function sendLogToRenderer(text, level) {
+  if (win && !win.isDestroyed()) {
+    win.webContents.send('main-log', { text, level, time: Date.now() });
+  }
+}
+const _origLog = console.log;
+const _origErr = console.error;
+const _origWarn = console.warn;
+console.log = (...args) => { _origLog(...args); sendLogToRenderer(args.join(' '), ''); };
+console.error = (...args) => { _origErr(...args); sendLogToRenderer(args.join(' '), 'error'); };
+console.warn = (...args) => { _origWarn(...args); sendLogToRenderer(args.join(' '), 'warn'); };
+
 protocol.registerSchemesAsPrivileged([
   { scheme: 'bltdrive', privileges: { standard: true, secure: true, supportFetchAPI: true, stream: true } }
 ]);

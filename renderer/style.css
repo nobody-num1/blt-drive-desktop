@@ -819,3 +819,28 @@ body.explorer-body .content { display: flex; flex-direction: column; min-height:
   .top { padding: 0 10px; }
   .brand { font-size: 13px; }
 }
+
+/* ── Console ── */
+.p-console { padding: 12px 16px; }
+.p-console h2 { margin: 0 0 10px 0; font-size: 14px; }
+.console-toolbar { display: flex; gap: 6px; align-items: center; margin-bottom: 8px; }
+.console-btn { background: var(--border); border: none; color: var(--text); padding: 4px 8px; border-radius: 4px; cursor: pointer; font-size: 12px; }
+.console-btn:hover { background: var(--accent); color: #fff; }
+.console-count { font-size: 11px; color: var(--muted); margin-left: auto; }
+.console-output {
+  background: #0a0a0a;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  padding: 8px;
+  height: 260px;
+  overflow-y: auto;
+  font-family: 'Cascadia Code', 'Fira Code', 'Consolas', monospace;
+  font-size: 11px;
+  line-height: 1.5;
+  color: #ccc;
+}
+.console-output .log-line { white-space: pre-wrap; word-break: break-all; }
+.console-output .log-line.error { color: #f66; }
+.console-output .log-line.warn { color: #fa0; }
+.console-output .log-line.info { color: #6af; }
+.console-output .log-time { color: #555; margin-right: 6px; }

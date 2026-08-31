@@ -1381,4 +1381,48 @@ $('btn-update-dl').onclick = async () => {
 $('btn-update-restart').onclick = () => window.blt.quitInstall();
 $('btn-update-dismiss').onclick = () => { const e = updEls(); e.banner.style.display = 'none'; };
 
+// ── Console ──
+(function initConsole() {
+  const output = $('console-output');
+  const countEl = $('console-count');
+  const clearBtn = $('console-clear');
+  const autoScrollBtn = $('console-auto-scroll');
+  let lineCount = 0;
+  let autoScroll = true;
+
+  function addLine(text, cls) {
+    const line = document.createElement('div');
+    line.className = 'log-line' + (cls ? ' ' + cls : '');
+    const time = new Date().toLocaleTimeString('fr-FR', { hour: '2-digit', minute: '2-digit', second: '2-digit' });
+    line.innerHTML = `<span class="log-time">${time}</span>${text.replace(/</g, '&lt;')}`;
+    output.appendChild(line);
+    lineCount++;
+    countEl.textContent = lineCount + ' lignes';
+    if (autoScroll) output.scrollTop = output.scrollHeight;
+    // Limite à 500 lignes
+    while (output.children.length > 500) output.removeChild(output.firstChild);
+  }
+
+  // Capture console.log/error/warn du renderer
+  const origLog = console.log;
+  const origErr = console.error;
+  const origWarn = console.warn;
+  console.log = (...args) => { origLog(...args); addLine(args.map(a => typeof a === 'object' ? JSON.stringify(a) : String(a)).join(' '), ''); };
+  console.error = (...args) => { origErr(...args); addLine(args.map(a => typeof a === 'object' ? JSON.stringify(a) : String(a)).join(' '), 'error'); };
+  console.warn = (...args) => { origWarn(...args); addLine(args.map(a => typeof a === 'object' ? JSON.stringify(a) : String(a)).join(' '), 'warn'); };
+
+  // Reçoit les logs du main process via IPC
+  if (window.blt && window.blt.onLog) {
+    window.blt.onLog((entry) => {
+      addLine(entry.text, entry.level || '');
+    });
+  }
+
+  clearBtn.onclick = () => { output.innerHTML = ''; lineCount = 0; countEl.textContent = '0 lignes'; };
+  autoScrollBtn.onclick = () => {
+    autoScroll = !autoScroll;
+    autoScrollBtn.style.background = autoScroll ? 'var(--accent)' : 'var(--border)';
+  };
+})();
+
 boot();

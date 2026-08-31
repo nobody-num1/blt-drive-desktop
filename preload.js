@@ -40,4 +40,5 @@ contextBridge.exposeInMainWorld('blt', {
   musicTunnelStatus: () => ipcRenderer.invoke('music-tunnel-status'),
   musicTunnelStart: (discordId, token) => ipcRenderer.invoke('music-tunnel-start', discordId, token),
   musicTunnelStop: () => ipcRenderer.invoke('music-tunnel-stop'),
+  onLog: cb => { ipcRenderer.on('main-log', (e, entry) => cb(entry)); },
 });
