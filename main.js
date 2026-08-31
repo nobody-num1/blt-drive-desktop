@@ -612,6 +612,13 @@ if (!gotLock) {
     if (loginOnShow) {
       const d = loginOnShow; loginOnShow = null;
       win.webContents.once('did-finish-load', () => applyLogin(d));
+    } else {
+      // Démarre le tunnel avec le compte actif existant
+      const acc = activeAccount();
+      if (acc && acc.discordId && acc.token) {
+        console.log('[main] Demarrage tunnel pour compte actif:', acc.label || acc.id);
+        startMusicTunnel(acc.discordId, acc.token);
+      }
     }
     setupAutoUpdater();
     // Vérifie une mise à jour au démarrage, sans bloquer
