@@ -1,7 +1,7 @@
 {
   "name": "blt-drive-desktop",
-  "version": "0.8.5",
-  "description": "BLT Drive Desktop — v0.8.5 : stream audio temps reel",
+  "version": "0.8.6",
+  "description": "BLT Drive Desktop — v0.8.6 : search YouTube via tunnel",
   "main": "main.js",
   "scripts": {
     "start": "electron .",
