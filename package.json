@@ -1,7 +1,7 @@
 {
   "name": "blt-drive-desktop",
-  "version": "0.8.6",
-  "description": "BLT Drive Desktop — v0.8.6 : search YouTube via tunnel",
+  "version": "0.8.7",
+  "description": "BLT Drive Desktop — v0.8.7 : search innertube YouTube Music",
   "main": "main.js",
   "scripts": {
     "start": "electron .",
