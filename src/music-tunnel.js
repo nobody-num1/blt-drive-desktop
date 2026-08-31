@@ -143,6 +143,8 @@ function connect() {
       return;
     }
 
+    console.log(`[music-tunnel] Message recu: ${msg.type} (${msg.requestId || ''})`);
+
     if (msg.type === 'stream-request') {
       handleStreamRequest(msg.requestId, msg.url);
       return;
