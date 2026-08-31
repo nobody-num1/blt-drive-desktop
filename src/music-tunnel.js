@@ -106,11 +106,17 @@ function handleStreamRequest(requestId, url) {
 
   const ytdlp = resolveYtDlp();
   const args = [
-    '--extractor-args', 'youtube:player_client=tv,web_safari',
-    '--sleep-requests', '2',
+    '--extractor-args', 'youtube:player_client=tv,web_creator,mweb',
+    '--sleep-requests', '1',
+    '--sleep-interval', '1',
+    '--max-sleep-interval', '3',
     '--force-ipv4',
-    '-o', '-',
+    '--geo-bypass',
     '--no-playlist', '--no-video', '--no-warnings',
+    '--retries', '3',
+    '--fragment-retries', '5',
+    '--extractor-retries', '3',
+    '-o', '-',
     '-f', 'bestaudio/best',
     url
   ];
