@@ -1,7 +1,7 @@
 {
   "name": "blt-drive-desktop",
-  "version": "0.8.11",
-  "description": "BLT Drive Desktop — v0.8.11 : timeout fetch innertube",
+  "version": "0.8.12",
+  "description": "BLT Drive Desktop — v0.8.12 : file attente sequentielle",
   "main": "main.js",
   "scripts": {
     "start": "electron .",
