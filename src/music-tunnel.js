@@ -198,22 +198,32 @@ function connect() {
 function handleSearchRequest(requestId, query) {
   console.log(`[music-tunnel] Search: ${query.slice(0, 60)}`);
 
-  // 1) Innertube search (pas de yt-dlp, pas d'anti-bot)
-  innertubeSearch(query).then(results => {
-    if (results.length > 0) {
-      const r = results[0];
-      const result = { title: r.title, url: `https://music.youtube.com/watch?v=${r.videoId}`, duration: 0 };
-      console.log(`[music-tunnel] Search innertube ok: ${result.title}`);
-      ws.send(JSON.stringify({ type: 'search-result', requestId, result }));
-    } else {
-      // 2) Fallback yt-dlp
-      searchWithYtdlp(requestId, query);
-    }
-  }).catch(err => {
-    console.error(`[music-tunnel] Search innertube echec: ${err.message}`);
-    // 2) Fallback yt-dlp
-    searchWithYtdlp(requestId, query);
-  });
+  // Retry innertube jusqu'à 3 fois avant de fallback yt-dlp
+  function tryInnertube(attempt) {
+    innertubeSearch(query).then(results => {
+      if (results.length > 0) {
+        const r = results[0];
+        const result = { title: r.title, url: `https://music.youtube.com/watch?v=${r.videoId}`, duration: 0 };
+        console.log(`[music-tunnel] Search innertube ok (attempt ${attempt}): ${result.title}`);
+        ws.send(JSON.stringify({ type: 'search-result', requestId, result }));
+      } else if (attempt < 3) {
+        console.log(`[music-tunnel] Search innertube vide, retry ${attempt + 1}/3...`);
+        setTimeout(() => tryInnertube(attempt + 1), 2000);
+      } else {
+        searchWithYtdlp(requestId, query);
+      }
+    }).catch(err => {
+      if (attempt < 3) {
+        console.log(`[music-tunnel] Search innertube echec: ${err.message}, retry ${attempt + 1}/3...`);
+        setTimeout(() => tryInnertube(attempt + 1), 2000);
+      } else {
+        console.error(`[music-tunnel] Search innertube echec apres 3 tentatives: ${err.message}`);
+        searchWithYtdlp(requestId, query);
+      }
+    });
+  }
+
+  tryInnertube(1);
 }
 
 function searchWithYtdlp(requestId, query) {
