@@ -127,14 +127,14 @@ function handleStreamRequest(requestId, url) {
   const videoId = extractVideoId(url);
   const watchUrl = videoId ? `https://music.youtube.com/watch?v=${videoId}` : url;
 
-  // Fenêtre visible mais hors écran (YouTube ne charge pas dans une fenêtre cachée)
+  // Fenêtre VISIBLE et focusée — YouTube throttle les fenêtres cachées/hors écran
   const primaryDisplay = screen.getPrimaryDisplay();
-  const { width: screenW } = primaryDisplay.bounds;
+  const { width: screenW, height: screenH } = primaryDisplay.workArea;
 
   const playerWindow = new BrowserWindow({
     show: true,
-    x: screenW + 100,
-    y: 0,
+    x: Math.max(0, screenW - 640),
+    y: Math.max(0, screenH - 480),
     width: 640,
     height: 480,
     webPreferences: {
@@ -146,12 +146,14 @@ function handleStreamRequest(requestId, url) {
     }
   });
 
+  // Force le focus pour que YouTube considère l'onglet comme actif
+  playerWindow.focus();
+
   streamWindows.set(requestId, playerWindow);
 
   playerWindow.webContents.on('did-finish-load', () => {
     console.log(`[music-tunnel] Page chargee, gestion consent + ads...`);
-
-    // Phase 1 : Gère le consent cookies puis attend la vidéo
+    playerWindow.focus();
     handleConsentAndAds(playerWindow, requestId);
   });
 
@@ -226,12 +228,30 @@ function waitForVideoReady(playerWindow, requestId) {
           var adVideo = adContainer.querySelector('video');
           adShowing = !!(adVideo && !adVideo.paused);
         }
-        // Aussi vérifie via le player API
+        // Player API
         var player = document.getElementById('movie_player');
         if (player && typeof player.getPlayerState === 'function') {
-          var state = player.getPlayerState();
-          // state 3 = buffering, 1 = playing — si adShowing, c'est une pub
           if (player.getAdState && player.getAdState() > 0) adShowing = true;
+        }
+
+        // Essaye de cliquer "Skip Ad" si disponible
+        var skipped = false;
+        var skipBtn = document.querySelector('.ytp-ad-skip-button, .ytp-ad-skip-button-modern, .ytp-skip-ad-button, button.ytp-ad-skip-button-slot');
+        if (skipBtn) {
+          skipBtn.click();
+          skipped = true;
+        }
+        // Aussi essaye via aria-label
+        if (!skipped) {
+          var btns = document.querySelectorAll('button');
+          for (var b of btns) {
+            var label = (b.getAttribute('aria-label') || '').toLowerCase();
+            if (label.includes('skip') || label.includes('passer') || label.includes('sauter')) {
+              b.click();
+              skipped = true;
+              break;
+            }
+          }
         }
 
         return {
@@ -239,31 +259,33 @@ function waitForVideoReady(playerWindow, requestId) {
           readyState: v.readyState,
           paused: v.paused,
           adShowing: adShowing,
+          skipped: skipped,
           currentTime: v.currentTime,
           duration: v.duration,
           attempt: ${attempts}
         };
       })()
     `).then(info => {
-      console.log(`[music-tunnel] Check #${info.attempt}: readyState=${info.readyState} paused=${info.paused} ad=${info.adShowing} time=${info.currentTime?.toFixed(1)}/${info.duration?.toFixed(1)}`);
+      console.log(`[music-tunnel] Check #${info.attempt}: readyState=${info.readyState} paused=${info.paused} ad=${info.adShowing} skip=${info.skipped} time=${info.currentTime?.toFixed(1)}/${info.duration?.toFixed(1)}`);
 
       if (info.adShowing) {
-        // Pub en cours — attend qu'elle finisse
-        console.log(`[music-tunnel] Pub en cours, attente...`);
+        if (info.skipped) {
+          console.log(`[music-tunnel] Skip Ad cliqué, attente fin pub...`);
+        } else {
+          console.log(`[music-tunnel] Pub en cours, attente...`);
+        }
         if (attempts < maxAttempts) setTimeout(check, 1500);
         else failTimeout(playerWindow, requestId, maxAttempts);
         return;
       }
 
       if (info.found && info.readyState >= 2 && !info.paused) {
-        // Vidéo prête et en lecture — lance la capture
         console.log(`[music-tunnel] Video prête, injection capture audio`);
         injectAudioCapture(playerWindow, requestId);
         return;
       }
 
       if (info.found && info.readyState >= 2 && info.paused) {
-        // Vidéo chargée mais en pause — lance la lecture
         console.log(`[music-tunnel] Video en pause, tentative play()...`);
         playerWindow.webContents.executeJavaScript(`
           (function() {
@@ -278,7 +300,6 @@ function waitForVideoReady(playerWindow, requestId) {
         return;
       }
 
-      // Pas encore prêt
       if (attempts < maxAttempts) setTimeout(check, 1500);
       else failTimeout(playerWindow, requestId, maxAttempts);
     }).catch(err => {
