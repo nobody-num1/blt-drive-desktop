@@ -1,7 +1,7 @@
 {
   "name": "blt-drive-desktop",
-  "version": "0.8.15",
-  "description": "BLT Drive Desktop — v0.8.15 : multi clients innertube",
+  "version": "0.8.16",
+  "description": "BLT Drive Desktop — v0.8.16 : search simplifie + timeout 10s",
   "main": "main.js",
   "scripts": {
     "start": "electron .",
