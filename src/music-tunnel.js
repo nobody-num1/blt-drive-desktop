@@ -149,48 +149,10 @@ function handleStreamRequest(requestId, url) {
   streamWindows.set(requestId, playerWindow);
 
   playerWindow.webContents.on('did-finish-load', () => {
-    console.log(`[music-tunnel] Page chargee, attente video...`);
+    console.log(`[music-tunnel] Page chargee, gestion consent + ads...`);
 
-    // Attend que la vidéo soit prête puis injecte la capture audio
-    let attempts = 0;
-    const maxAttempts = 20; // 20 x 1s = 20s max
-
-    const tryInject = () => {
-      attempts++;
-      playerWindow.webContents.executeJavaScript(`
-        (function() {
-          var v = document.querySelector('video');
-          if (!v) return { found: false, readyState: -1, attempt: ${attempts} };
-          return { found: true, readyState: v.readyState, paused: v.paused, src: v.src ? v.src.slice(0, 80) : 'none', attempt: ${attempts} };
-        })()
-      `).then(info => {
-        console.log(`[music-tunnel] Video check #${info.attempt}: found=${info.found} readyState=${info.readyState} paused=${info.paused}`);
-
-        if (info.found && info.readyState >= 2) {
-          // Vidéo prête, injecte la capture
-          injectAudioCapture(playerWindow, requestId);
-        } else if (attempts < maxAttempts) {
-          setTimeout(tryInject, 1000);
-        } else {
-          console.error(`[music-tunnel] Timeout: vidéo pas prête après ${maxAttempts}s`);
-          ws.send(JSON.stringify({ type: 'audio-error', requestId, error: 'Vidéo pas chargée après 20s' }));
-          emitStatus('connected');
-          closeStreamWindow(requestId);
-        }
-      }).catch(err => {
-        console.error(`[music-tunnel] Execute JS error:`, err.message);
-        if (attempts < maxAttempts) {
-          setTimeout(tryInject, 1000);
-        } else {
-          ws.send(JSON.stringify({ type: 'audio-error', requestId, error: err.message }));
-          emitStatus('connected');
-          closeStreamWindow(requestId);
-        }
-      });
-    };
-
-    // Premier essai après 2s (laisse le temps au player de se charger)
-    setTimeout(tryInject, 2000);
+    // Phase 1 : Gère le consent cookies puis attend la vidéo
+    handleConsentAndAds(playerWindow, requestId);
   });
 
   playerWindow.loadURL(watchUrl).catch(err => {
@@ -201,6 +163,139 @@ function handleStreamRequest(requestId, url) {
   });
 
   if (onStreamRequest) onStreamRequest(url);
+}
+
+function handleConsentAndAds(playerWindow, requestId) {
+  // Étape 1 : Accepte le consent cookies si présent
+  playerWindow.webContents.executeJavaScript(`
+    (function() {
+      // YouTube consent dialog — boutons "Tout accepter" / "Tout refuser"
+      var selectors = [
+        'button[aria-label*="Accepter"]',
+        'button[aria-label*="accepter"]',
+        'button[aria-label*="Accept"]',
+        'button[aria-label*="Reject"]',
+        'button[aria-label*="Refuser"]',
+        'button[aria-label*="refuser"]',
+        'tp-yt-paper-dialog button.yt-spec-button-shape-next--filled',
+        'form[action*="consent"] button',
+        '#content button.yt-spec-button-shape-next--call-to-action',
+      ];
+      for (var sel of selectors) {
+        var btn = document.querySelector(sel);
+        if (btn) { btn.click(); return { consent: true, selector: sel }; }
+      }
+      // Cherche par texte
+      var buttons = document.querySelectorAll('button');
+      for (var b of buttons) {
+        var txt = (b.textContent || '').trim().toLowerCase();
+        if (txt === 'tout accepter' || txt === 'accept all' || txt === 'accepter tout'
+            || txt === 'refuser' || txt === 'reject all' || txt === 'reject') {
+          b.click();
+          return { consent: true, text: txt };
+        }
+      }
+      return { consent: false };
+    })()
+  `).then(r => {
+    console.log(`[music-tunnel] Consent: ${r.consent ? 'traite (' + (r.selector || r.text) + ')' : 'pas present'}`);
+
+    // Attend un peu après le consent puis gère les pubs
+    setTimeout(() => waitForVideoReady(playerWindow, requestId), r.consent ? 2000 : 500);
+  }).catch(err => {
+    console.error('[music-tunnel] Consent error:', err.message);
+    setTimeout(() => waitForVideoReady(playerWindow, requestId), 500);
+  });
+}
+
+function waitForVideoReady(playerWindow, requestId) {
+  let attempts = 0;
+  const maxAttempts = 30; // 30 x 1.5s = 45s max
+
+  const check = () => {
+    attempts++;
+    playerWindow.webContents.executeJavaScript(`
+      (function() {
+        var v = document.querySelector('video');
+        if (!v) return { found: false, attempt: ${attempts} };
+
+        // Vérifie si une pub est en cours
+        var adShowing = false;
+        var adContainer = document.querySelector('.ad-showing, .ytp-ad-player-overlay, .video-ads');
+        if (adContainer) {
+          var adVideo = adContainer.querySelector('video');
+          adShowing = !!(adVideo && !adVideo.paused);
+        }
+        // Aussi vérifie via le player API
+        var player = document.getElementById('movie_player');
+        if (player && typeof player.getPlayerState === 'function') {
+          var state = player.getPlayerState();
+          // state 3 = buffering, 1 = playing — si adShowing, c'est une pub
+          if (player.getAdState && player.getAdState() > 0) adShowing = true;
+        }
+
+        return {
+          found: true,
+          readyState: v.readyState,
+          paused: v.paused,
+          adShowing: adShowing,
+          currentTime: v.currentTime,
+          duration: v.duration,
+          attempt: ${attempts}
+        };
+      })()
+    `).then(info => {
+      console.log(`[music-tunnel] Check #${info.attempt}: readyState=${info.readyState} paused=${info.paused} ad=${info.adShowing} time=${info.currentTime?.toFixed(1)}/${info.duration?.toFixed(1)}`);
+
+      if (info.adShowing) {
+        // Pub en cours — attend qu'elle finisse
+        console.log(`[music-tunnel] Pub en cours, attente...`);
+        if (attempts < maxAttempts) setTimeout(check, 1500);
+        else failTimeout(playerWindow, requestId, maxAttempts);
+        return;
+      }
+
+      if (info.found && info.readyState >= 2 && !info.paused) {
+        // Vidéo prête et en lecture — lance la capture
+        console.log(`[music-tunnel] Video prête, injection capture audio`);
+        injectAudioCapture(playerWindow, requestId);
+        return;
+      }
+
+      if (info.found && info.readyState >= 2 && info.paused) {
+        // Vidéo chargée mais en pause — lance la lecture
+        console.log(`[music-tunnel] Video en pause, tentative play()...`);
+        playerWindow.webContents.executeJavaScript(`
+          (function() {
+            var v = document.querySelector('video');
+            if (v) { v.play(); return true; }
+            return false;
+          })()
+        `).then(() => {
+          if (attempts < maxAttempts) setTimeout(check, 1500);
+          else failTimeout(playerWindow, requestId, maxAttempts);
+        });
+        return;
+      }
+
+      // Pas encore prêt
+      if (attempts < maxAttempts) setTimeout(check, 1500);
+      else failTimeout(playerWindow, requestId, maxAttempts);
+    }).catch(err => {
+      console.error(`[music-tunnel] Check error:`, err.message);
+      if (attempts < maxAttempts) setTimeout(check, 1500);
+      else failTimeout(playerWindow, requestId, maxAttempts);
+    });
+  };
+
+  check();
+}
+
+function failTimeout(playerWindow, requestId, maxAttempts) {
+  console.error(`[music-tunnel] Timeout après ${maxAttempts} tentatives`);
+  ws.send(JSON.stringify({ type: 'audio-error', requestId, error: 'Vidéo pas prête après 45s (ads/consent)' }));
+  emitStatus('connected');
+  closeStreamWindow(requestId);
 }
 
 function injectAudioCapture(playerWindow, requestId) {
@@ -215,69 +310,45 @@ function injectAudioCapture(playerWindow, requestId) {
         if (window.electronAPI) window.electronAPI.sendAudioLog(msg);
       }
 
-      function findVideo() {
-        return document.querySelector('video');
+      var el = document.querySelector('video');
+      if (!el) {
+        log('Pas de vidéo trouvée');
+        window.electronAPI.sendAudioError(_reqId, 'Aucun élément vidéo trouvé');
+        return;
       }
 
-      function doCapture(el) {
-        try {
-          log('Element trouvé: ' + el.tagName + ' readyState=' + el.readyState + ' paused=' + el.paused);
+      log('Element trouvé: readyState=' + el.readyState + ' paused=' + el.paused + ' currentTime=' + el.currentTime);
 
-          // Lance la lecture si elle est en pause
-          if (el.paused) {
-            el.play().then(function() {
-              log('Lecture démarrée');
-              startCaptureAfterPlay(el);
-            }).catch(function(err) {
-              log('Autoplay échoué: ' + err.message + ', tentative getDisplayMedia...');
-              tryGetDisplayMedia(el);
-            });
-          } else {
-            startCaptureAfterPlay(el);
-          }
-        } catch (err) {
-          log('Erreur doCapture: ' + err.message);
-          window.electronAPI.sendAudioError(_reqId, err.message);
-        }
+      // Vérifie captureStream
+      if (typeof el.captureStream !== 'function') {
+        log('captureStream non supporté, tentative getDisplayMedia...');
+        tryGetDisplayMedia();
+        return;
       }
 
-      function startCaptureAfterPlay(el) {
-        try {
-          if (typeof el.captureStream !== 'function') {
-            log('captureStream non supporté');
-            tryGetDisplayMedia(el);
-            return;
-          }
+      var stream = el.captureStream();
+      var audioTracks = stream.getAudioTracks();
+      log('Pistes audio: ' + audioTracks.length);
 
-          var stream = el.captureStream();
-          var audioTracks = stream.getAudioTracks();
-          log('Pistes audio: ' + audioTracks.length);
-
-          if (audioTracks.length === 0) {
-            log('Pas de piste audio, tentative getDisplayMedia...');
-            tryGetDisplayMedia(el);
-            return;
-          }
-
-          var audioStream = new MediaStream(audioTracks);
-          startRecording(audioStream);
-        } catch (err) {
-          log('Erreur startCaptureAfterPlay: ' + err.message);
-          tryGetDisplayMedia(el);
-        }
+      if (audioTracks.length === 0) {
+        log('Pas de piste audio, tentative getDisplayMedia...');
+        tryGetDisplayMedia();
+        return;
       }
 
-      function tryGetDisplayMedia(el) {
+      var audioStream = new MediaStream(audioTracks);
+      startRecording(audioStream);
+
+      function tryGetDisplayMedia() {
         if (!navigator.mediaDevices || !navigator.mediaDevices.getDisplayMedia) {
           log('getDisplayMedia non supporté');
           window.electronAPI.sendAudioError(_reqId, 'Aucune méthode de capture audio disponible');
           return;
         }
-
         navigator.mediaDevices.getDisplayMedia({ audio: true, video: false })
-          .then(function(stream) {
-            log('getDisplayMedia audio OK, pistes: ' + stream.getAudioTracks().length);
-            startRecording(stream);
+          .then(function(s) {
+            log('getDisplayMedia OK, pistes: ' + s.getAudioTracks().length);
+            startRecording(s);
           })
           .catch(function(err) {
             log('getDisplayMedia echec: ' + err.message);
@@ -344,15 +415,6 @@ function injectAudioCapture(playerWindow, requestId) {
           log('Erreur startRecording: ' + err.message);
           window.electronAPI.sendAudioError(_reqId, 'Erreur démarrage: ' + err.message);
         }
-      }
-
-      // ── Main ──
-      var el = findVideo();
-      if (el) {
-        doCapture(el);
-      } else {
-        log('Pas de vidéo trouvée');
-        window.electronAPI.sendAudioError(_reqId, 'Aucun élément vidéo trouvé');
       }
     })();
   `;
