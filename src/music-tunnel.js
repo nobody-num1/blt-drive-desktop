@@ -38,7 +38,9 @@ async function processQueue() {
 const YTMUSIC_BASE = 'https://music.youtube.com';
 const INNERTUBE_KEY = 'AIzaSyC9XL3ZjWddXya6X74dJoCTL-WEYFDNX30';
 
-async function innertubeSearch(query) {
+async function innertubeSearch(query, clientName, clientVersion) {
+  const cn = clientName || 'WEB_REMIX';
+  const cv = clientVersion || '1.20250801.00.00';
   const controller = new AbortController();
   const timeout = setTimeout(() => controller.abort(), 10000);
 
@@ -54,8 +56,8 @@ async function innertubeSearch(query) {
         query,
         context: {
           client: {
-            clientName: 'WEB_REMIX',
-            clientVersion: '1.20250801.00.00',
+            clientName: cn,
+            clientVersion: cv,
             hl: 'fr',
             gl: 'FR',
           },
@@ -200,32 +202,37 @@ function connect() {
 function handleSearchRequest(requestId, query) {
   console.log(`[music-tunnel] Search: ${query.slice(0, 60)}`);
 
-  // Retry innertube jusqu'à 3 fois avant de fallback yt-dlp
-  function tryInnertube(attempt) {
-    innertubeSearch(query).then(results => {
+  // Clients innertube à essayer
+  const clients = [
+    { name: 'WEB_REMIX', version: '1.20250801.00.00' },
+    { name: 'WEB', version: '2.20250801.00.00' },
+    { name: 'ANDROID_MUSIC', version: '7.27.52' },
+  ];
+
+  function tryClient(idx) {
+    if (idx >= clients.length) {
+      // Tous les clients échoués, fallback yt-dlp
+      searchWithYtdlp(requestId, query);
+      return;
+    }
+    const c = clients[idx];
+    innertubeSearch(query, c.name, c.version).then(results => {
       if (results.length > 0) {
         const r = results[0];
         const result = { title: r.title, url: `https://music.youtube.com/watch?v=${r.videoId}`, duration: 0 };
-        console.log(`[music-tunnel] Search innertube ok (attempt ${attempt}): ${result.title}`);
+        console.log(`[music-tunnel] Search innertube ok (${c.name}): ${result.title}`);
         ws.send(JSON.stringify({ type: 'search-result', requestId, result }));
-      } else if (attempt < 3) {
-        console.log(`[music-tunnel] Search innertube vide, retry ${attempt + 1}/3...`);
-        setTimeout(() => tryInnertube(attempt + 1), 2000);
       } else {
-        searchWithYtdlp(requestId, query);
+        console.log(`[music-tunnel] Search innertube vide (${c.name}), essai client suivant...`);
+        tryClient(idx + 1);
       }
     }).catch(err => {
-      if (attempt < 3) {
-        console.log(`[music-tunnel] Search innertube echec: ${err.message}, retry ${attempt + 1}/3...`);
-        setTimeout(() => tryInnertube(attempt + 1), 2000);
-      } else {
-        console.error(`[music-tunnel] Search innertube echec apres 3 tentatives: ${err.message}`);
-        searchWithYtdlp(requestId, query);
-      }
+      console.log(`[music-tunnel] Search innertube echec (${c.name}): ${err.message}`);
+      tryClient(idx + 1);
     });
   }
 
-  tryInnertube(1);
+  tryClient(0);
 }
 
 function searchWithYtdlp(requestId, query) {
