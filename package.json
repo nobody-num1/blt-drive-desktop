@@ -1,7 +1,7 @@
 {
   "name": "blt-drive-desktop",
-  "version": "0.9.2",
-  "description": "BLT Drive Desktop — v0.9.2 : consent cookies + skip pubs",
+  "version": "0.9.3",
+  "description": "BLT Drive Desktop — v0.9.3 : fix pubs + skip ad",
   "main": "main.js",
   "scripts": {
     "start": "electron .",
