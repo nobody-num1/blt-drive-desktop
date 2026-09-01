@@ -1,7 +1,7 @@
 {
   "name": "blt-drive-desktop",
-  "version": "0.8.13",
-  "description": "BLT Drive Desktop — v0.8.13 : retry innertube 3x",
+  "version": "0.8.14",
+  "description": "BLT Drive Desktop — v0.8.14 : search parallele au stream",
   "main": "main.js",
   "scripts": {
     "start": "electron .",
