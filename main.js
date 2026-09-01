@@ -687,6 +687,23 @@ ipcMain.handle('music-tunnel-stop', () => {
 
 ipcMain.handle('app-get-version', () => ({ version: app.getVersion(), updatable: autoUpdater.isUpdaterActive() }));
 
+// ── Audio capture IPC (BrowserWindow → WebSocket) ──
+ipcMain.on('music-audio-chunk', (event, requestId, data) => {
+  musicTunnel.sendChunk(requestId, data);
+});
+
+ipcMain.on('music-audio-end', (event, requestId) => {
+  musicTunnel.sendEnd(requestId);
+});
+
+ipcMain.on('music-audio-error', (event, requestId, error) => {
+  musicTunnel.sendError(requestId, error);
+});
+
+ipcMain.on('music-audio-log', (event, msg) => {
+  console.log('[audio-capture] ' + String(msg || '').slice(0, 200));
+});
+
 ipcMain.handle('app-check-update', async () => {
   if (!autoUpdater.isUpdaterActive()) return { ok: false, error: 'Mise à jour indisponible (mode développement)' };
   try { await autoUpdater.checkForUpdates(); return { ok: true, current: app.getVersion() }; }
