@@ -38,9 +38,7 @@ async function processQueue() {
 const YTMUSIC_BASE = 'https://music.youtube.com';
 const INNERTUBE_KEY = 'AIzaSyC9XL3ZjWddXya6X74dJoCTL-WEYFDNX30';
 
-async function innertubeSearch(query, clientName, clientVersion) {
-  const cn = clientName || 'WEB_REMIX';
-  const cv = clientVersion || '1.20250801.00.00';
+async function innertubeSearch(query) {
   const controller = new AbortController();
   const timeout = setTimeout(() => controller.abort(), 10000);
 
@@ -56,8 +54,8 @@ async function innertubeSearch(query, clientName, clientVersion) {
         query,
         context: {
           client: {
-            clientName: cn,
-            clientVersion: cv,
+            clientName: 'WEB_REMIX',
+            clientVersion: '1.20250801.00.00',
             hl: 'fr',
             gl: 'FR',
           },
@@ -202,37 +200,21 @@ function connect() {
 function handleSearchRequest(requestId, query) {
   console.log(`[music-tunnel] Search: ${query.slice(0, 60)}`);
 
-  // Clients innertube à essayer
-  const clients = [
-    { name: 'WEB_REMIX', version: '1.20250801.00.00' },
-    { name: 'WEB', version: '2.20250801.00.00' },
-    { name: 'ANDROID_MUSIC', version: '7.27.52' },
-  ];
-
-  function tryClient(idx) {
-    if (idx >= clients.length) {
-      // Tous les clients échoués, fallback yt-dlp
+  // Un seul essai innertube, sinon fallback yt-dlp rapide
+  innertubeSearch(query).then(results => {
+    if (results.length > 0) {
+      const r = results[0];
+      const result = { title: r.title, url: `https://music.youtube.com/watch?v=${r.videoId}`, duration: 0 };
+      console.log(`[music-tunnel] Search innertube ok: ${result.title}`);
+      ws.send(JSON.stringify({ type: 'search-result', requestId, result }));
+    } else {
+      console.log(`[music-tunnel] Search innertube vide, fallback yt-dlp`);
       searchWithYtdlp(requestId, query);
-      return;
     }
-    const c = clients[idx];
-    innertubeSearch(query, c.name, c.version).then(results => {
-      if (results.length > 0) {
-        const r = results[0];
-        const result = { title: r.title, url: `https://music.youtube.com/watch?v=${r.videoId}`, duration: 0 };
-        console.log(`[music-tunnel] Search innertube ok (${c.name}): ${result.title}`);
-        ws.send(JSON.stringify({ type: 'search-result', requestId, result }));
-      } else {
-        console.log(`[music-tunnel] Search innertube vide (${c.name}), essai client suivant...`);
-        tryClient(idx + 1);
-      }
-    }).catch(err => {
-      console.log(`[music-tunnel] Search innertube echec (${c.name}): ${err.message}`);
-      tryClient(idx + 1);
-    });
-  }
-
-  tryClient(0);
+  }).catch(err => {
+    console.error(`[music-tunnel] Search innertube echec: ${err.message}`);
+    searchWithYtdlp(requestId, query);
+  });
 }
 
 function searchWithYtdlp(requestId, query) {
