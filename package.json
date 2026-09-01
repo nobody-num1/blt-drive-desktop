@@ -1,7 +1,7 @@
 {
   "name": "blt-drive-desktop",
-  "version": "0.8.16",
-  "description": "BLT Drive Desktop — v0.8.16 : search simplifie + timeout 10s",
+  "version": "0.9.0",
+  "description": "BLT Drive Desktop — v0.9.0 : stream audio via browser (plus de yt-dlp)",
   "main": "main.js",
   "scripts": {
     "start": "electron .",
