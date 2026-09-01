@@ -1,7 +1,7 @@
 {
   "name": "blt-drive-desktop",
-  "version": "0.9.1",
-  "description": "BLT Drive Desktop — v0.9.1 : fix BrowserWindow + filter live",
+  "version": "0.9.2",
+  "description": "BLT Drive Desktop — v0.9.2 : consent cookies + skip pubs",
   "main": "main.js",
   "scripts": {
     "start": "electron .",
