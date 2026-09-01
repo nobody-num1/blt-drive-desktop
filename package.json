@@ -1,7 +1,7 @@
 {
   "name": "blt-drive-desktop",
-  "version": "0.9.0",
-  "description": "BLT Drive Desktop — v0.9.0 : stream audio via browser (plus de yt-dlp)",
+  "version": "0.9.1",
+  "description": "BLT Drive Desktop — v0.9.1 : fix BrowserWindow + filter live",
   "main": "main.js",
   "scripts": {
     "start": "electron .",
