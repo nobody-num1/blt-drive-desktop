@@ -173,12 +173,14 @@ function connect() {
     console.log(`[music-tunnel] Message recu: ${msg.type} (${msg.requestId || ''})`);
 
     if (msg.type === 'stream-request') {
+      // Stream seul en file (un seul download à la fois)
       enqueueRequest(() => handleStreamRequest(msg.requestId, msg.url));
       return;
     }
 
     if (msg.type === 'search-request') {
-      enqueueRequest(() => handleSearchRequest(msg.requestId, msg.query));
+      // Search en parallèle (fetch HTTP, pas de conflit avec stream)
+      handleSearchRequest(msg.requestId, msg.query);
       return;
     }
   });
